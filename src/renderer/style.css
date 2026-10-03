@@ -37,6 +37,22 @@ html, body {
      实测会把空闲 CPU 顶上去，删掉了。 */
 }
 
+/*
+ * 静态立绘的容器。和 #pet-canvas 同一套定位 —— 两者互斥，只会显示一个。
+ *
+ * 为什么必须单独一个 div 而不是复用 canvas 的父节点：
+ * canvas 的父节点是 <body>，而 createStaticPet() 会先 `host.innerHTML = ''`，
+ * 传 body 进去等于把整个界面删光（实测：输入栏、对话面板、浮层全没了）。
+ */
+#pet-static-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;                       /* 命中判定交给 static-pet.js */
+  z-index: 0;
+}
+
 /* ------------------------------------------------ 历史浮层 ---------- */
 
 #history-panel {

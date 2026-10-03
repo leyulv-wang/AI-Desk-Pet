@@ -1127,6 +1127,109 @@ set autoInteract(t){ ... t ? this.on("pointertap", Handler, this) : this.off("po
 
 ---
 
+## 静态立绘（不想找 Live2D 模型时的第二条路）
+
+Live2D 那条路的成本全在**换角色**上：得找到模型，而且大多是别人的同人作品
+（上面那个芙宁娜就明确**禁止二次配布**），几十 MB 还要 Cubism Core。
+
+静态立绘是**几张图片换着显示** —— 虚拟主播圈叫 PNGtuber，美术圈叫**差分图**，
+日本老牌桌宠平台（伺か / 伪春菜）几十年前就这么干了。几百 KB，自己画或
+AI 生成都行。代价是**没有形变**：表情靠换整张图，不能像 Live2D 那样眉毛眼睛一起动。
+
+### 切换
+
+`config.json` 里一行：
+
+```json
+"renderer": "static"
+```
+
+不写或写别的值都当 `live2d` 处理。改完重启桌宠。
+
+### 立刻看到效果（不用自己画）
+
+```bash
+npm run pet:static        # 生成 8 张占位立绘 + 写清单
+```
+
+它会在 `assets/models/StaticDemo/` 生成 8 个情绪各一张 SVG，并更新
+`assets/models/index.json` 的 `static` 段。然后把 `renderer` 改成 `static` 重启即可。
+
+想换成自己的画：**覆盖同名文件**，或者把清单里 `static.images` 的值改成你的文件名。
+
+### 图片放哪、怎么命名
+
+```
+assets/models/<目录>/
+├── 平静.svg（或 .png/.webp）
+├── 开心.svg
+└── ...
+```
+
+清单写在 `assets/models/index.json`：
+
+```json
+{
+  "staticDir": "StaticDemo",
+  "static": {
+    "default": "平静",
+    "images": { "平静": "平静.svg", "开心": "开心.svg" },
+    "talk": null,
+    "idleEmotions": ["开心", "得意", "温柔"],
+    "idleIntervalSec": [12, 25]
+  }
+}
+```
+
+- **键名两套都认**：中文情绪类别（`开心`/`难过`/…），或英文（`happy`/`sad`/`angry`…）。
+  这样从网上下的 PNGtuber 素材包不用改名就能用。
+- `talk` 可选：说话时显示哪张。不写就沿用当前情绪图。
+- `idleEmotions`：待机时随机切这几张 —— **静态立绘最大的问题是「不动」**，
+  随机换表情是最省事的「活着」信号。另外还有一层 CSS 呼吸动画（`margin-bottom` 的
+  4.2s 循环，走合成器不触发重排）。
+
+### 三条设计决定
+
+**① 不用 Pixi。** 换图、淡入、呼吸、点一下弹一下，CSS 全都能做，而且不用加载
+400 KB 的 `pixi.min.js` 和 Cubism Core，不占 WebGL 上下文。所以 `static-pet.js`
+里**一行 Pixi 都没有**，纯 DOM。
+
+> 注意：`index.html` 目前仍然无条件加载 Pixi（Live2D 那条路要用），所以切到静态
+> 立绘时省下的主要是**模型加载和 WebGL 纹理**，不是那个 400 KB 的库。
+> 要连库一起省，得把 vendor 那几个 script 改成按需注入 —— 还没做。
+
+**② 两个槽做交叉淡入。** 直接改同一个 `<img>` 的 `src` 会闪（新图解码完成前是空的）。
+所以有两个槽，新图 `onload` 之后才淡入、旧图再淡出。
+
+**③ 点击用像素级命中。** 立绘是透明 PNG，四周大片空白，用矩形判定会出现
+「点到空气也算点到」。所以把点击坐标映射到图片像素、读 alpha。
+代价是一次 `getImageData`（几毫秒），只在点击时发生。
+
+### 对外接口和 Live2D 完全一致
+
+上层（`chat.js` / `main.js`）只认 `window.petModel`，两条路暴露同一组方法，
+所以切换时上层**一行都不用改**。这是能「配置里切」的前提。
+
+但「接口一致」这句话**不能只写在注释里** —— 所以有自检：
+
+```bash
+npm run check:renderers          # 静态检查：接口是否对齐 + 脚本是否都加载了
+npm run check:renderers -- --live # 实测：连上运行中的桌宠，看渲染器真建起来没有
+```
+
+`--live` 需要桌宠带 `--remote-debugging-port=9222` 启动。
+
+> **这个自检当天就抓到两个真 bug**：`static-pet.js` 缺 `getMouthValue`（切过去
+> `--selftest` 会静默失效），以及 `index.html` 根本没加载它。
+> 后来又靠 `--live` 抓到两个更严重的：
+> ① 立绘初始化把 `<body>` 当成了自己的容器，`innerHTML = ''` **把整个界面删光**；
+> ② `pet://` 协议的 MIME 表没有 `.svg`，图片被当二进制返回、`<img>` 拒绝解码，
+> **立绘完全不显示但没有任何报错**。
+>
+> 这类问题的共同点是「不报错、只是不对劲」，光看代码看不出来。
+
+---
+
 ## 配置 API Key
 
 **方式一（推荐）：环境变量。** 只要系统里有下面任意一个，就能直接用，不用建文件：

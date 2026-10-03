@@ -13,6 +13,8 @@
   "character": "furina",
   "_角色": "character 指向 characters/<名字>.json，换角色只改这一个字段。systemPrompt 留空 = 用角色文件里的那份；在这里写会完全顶掉它。",
   "systemPrompt": "",
+  "_渲染器": "用哪条路画角色。live2d=Live2D 模型（有形变，眨眼/呼吸/嘴型都是真的，但要找模型）；static=静态立绘（几张 PNG 换着显示，自己画或 AI 生成都行，代价是表情靠换整张图）。两条路对外接口完全一致，上层代码无感。static 的图片放 assets/models/<名字>/，并写进 assets/models/index.json 的 static.images。详见 README「静态立绘」。",
+  "renderer": "live2d",
   "maxHistory": 20,
   "temperature": 0.8,
   "_记忆": "extractModel 留空则跟 model 同一个。抽取发生在对话结束后的空闲时间，不阻塞聊天。",
@@ -91,44 +93,32 @@
     "split": { "minChars": 10, "maxChars": 48 }
   },
 
-  "_唱歌": "离线翻唱：给一首原曲 → 分离出人声 → 换成角色的音色 → 混回伴奏 → 在桌宠里唱。和说话是两条独立链路，只是共用一张嗓子。首次使用要先建 Python 环境：npm run sing:setup",
-  "_唱歌-怎么用": "把音频丢进 desktop-pet/songs/ 目录（或启动桌宠后点 🎤 → ＋选歌），然后点「唱」。一首歌要等 1~3 分钟（分离占一半以上），跑完点 ▶ 播放 —— 她的口型跟的是**人声轨**，不是成品，所以不会跟着鼓点乱动。",
-  "_唱歌-引擎": "engine=rvc（推荐）：用训练好的角色音色模型，音色最准。engine=zeroshot：零样本，拿一段参考音频直接转，不用训练但音色相似度低一档。",
-  "_唱歌-缓存": "分离结果按歌曲内容指纹缓存（separate.cache）。同一首歌换音色重唱时会跳过分离 —— 这一步占总耗时 50~75%，是最值得的优化。产物在 .userdata/singing/<key>/。",
+  "_唱歌": "离线翻唱：给一首原曲 → 分离出人声 → 换成角色的音色 → 混回伴奏 → 在桌宠里唱。和说话是两条独立链路，只是共用一张嗓子。跑 `npm run sing:setup` 体检环境，缺什么它会说。",
+  "_唱歌-怎么用": "把音频丢进 desktop-pet/songs/ 目录（或启动桌宠后点 🎤 → ＋选歌），然后点「唱」。一首歌等 30 秒~2 分钟，跑完**自动开唱**。唱歌时按钮会变成「■ 停止」，底部停止键也能停播放。",
+  "_唱歌-引擎": "只有 ddsp 一种：DDSP-SVC + 训练好的音色模型（权重放 D:\\models\\DDSP-SVC\\voices\\<名字>\\，见 singing/README.md）。试过 RVC，但公开的芙宁娜 RVC 模型训练不足，实测全面不如 DDSP —— 排查过程写在 singing/README.md 里，别再走一遍。",
+  "_唱歌-缓存": "产物按「歌曲 + 音色参数」哈希缓存，同一首歌第二次点是毫秒级（命中就不启 Python）。产物在 .userdata/singing/<key>/。",
   "singing": {
     "enabled": true,
-    "engine": "rvc",
+    "engine": "ddsp",
     "separate": {
-      "_模型": "audio-separator 的模型文件名。默认 BS-RoFormer（MIT 渠道）。想换轻量/更快可试 mel_band_roformer 系。",
-      "model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+      "_模型": "demucs 的模型。实测 htdemucs / htdemucs_ft / mdx_extra 三者输出相关系数 0.998+ —— 换分离器几乎不改变结果，所以用最快的 htdemucs。",
+      "model": "htdemucs",
       "cache": true
     },
-    "rvc": {
-      "_模型": "音色模型名，对应 singing/models/rvc/<name>.pth（配套的 .index 同名即可自动带上）。",
-      "model": "furina",
-      "_transpose": "变调半音。同性别转换一般 0；男声歌转女声要 +12 左右。",
-      "transpose": 0,
-      "_f0method": "音高提取器。rmvpe 精度最高（默认）；fcpe 更快但噪下差约 10 个百分点。",
-      "f0method": "rmvpe",
-      "_indexRate": "检索特征比例。越高越像目标音色，但咬字会糊。0.75 是 AI 翻唱的常用值。",
-      "indexRate": 0.75,
-      "protect": 0.33,
-      "_rmsMixRate": "响度包络：0=完全跟随原唱，1=完全用固定响度。",
-      "rmsMixRate": 0.25,
-      "denoise": false
-    },
-    "zeroshot": {
-      "_reference": "参考音频路径。留空则用 .userdata/clone-source.wav（和云端 TTS 用的是同一个克隆源，音色最一致）。",
-      "reference": "",
-      "_diffusionSteps": "唱歌建议 30~50（官方默认 25 偏低）。",
-      "diffusionSteps": 40,
-      "f0Condition": true,
-      "semiToneShift": 0
+    "ddsp": {
+      "_voice": "音色模型名，对应 D:\\models\\DDSP-SVC\\voices\\<名字>\\{model.pt, config.yaml}。",
+      "voice": "芙宁娜",
+      "_spkId": "说话人编号，**1-based**。DDSP 内部是 spk_embed(spk_id-1)，传 0 会索引越界、触发 CUDA device-side assert（会把显卡驱动搞成 TDR）。单说话人固定 1。",
+      "spkId": 1,
+      "_formant": "共振峰偏移，只改音色不改音高。实测 0 已是最优（往两边调相似度都下降），不用动。",
+      "formant": 0,
+      "_seed": "随机种子。DDSP 的噪声激励没种子就每次输出都不同（实测同配置两跑波形差 0.46）。固定它才能复现。",
+      "seed": 1
     },
     "mix": {
-      "_增益": "人声/伴奏的增益（dB）。AI 人声常常偏小，默认给人声 +2dB。",
-      "vocalGain": 2,
-      "instrumentalGain": 0,
+      "_增益": "人声/伴奏的增益（dB）。实测 0 / -1 时人声与伴奏约 +0.2dB，比例合适。",
+      "vocalGain": 0,
+      "instrumentalGain": -1,
       "_响度": "输出响度（LUFS）。-14 是流媒体常用值。",
       "targetLufs": -14,
       "_格式": "wav（无损，大）/ m4a（小很多）。",

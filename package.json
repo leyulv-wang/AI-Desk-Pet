@@ -18,6 +18,8 @@
     "sing": "node scripts/sing-run.mjs",
     "test:singing": "node scripts/test-singing.mjs",
     "probe:sing": "node scripts/probe-singing-play.mjs",
+    "pet:static": "node scripts/make-static-pet.mjs",
+    "check:renderers": "node scripts/check-pet-renderers.mjs",
     "check:wiring": "node scripts/check-wiring.mjs",
     "voice:test": "node scripts/test-tts.mjs",
     "voice:emo": "node scripts/test-voice-select.mjs",

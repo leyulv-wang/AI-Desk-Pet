@@ -118,39 +118,60 @@
     let running = true
     let destroyed = false
 
-    /** 换到某个键对应的图。同键不重复换（否则每次情绪刷新都要淡一次） */
-    function show(key, { force = false } = {}) {
-      const file = images[key] || images[defaultKey]
-      if (!file) return
-      if (!force && key === currentKey && slots[front].src) return
-      const next = 1 - front
-      const img = slots[next]
-      img.src = url(file)
+    /**
+     * 往指定槽里装一张图，装好了再淡入。
+     *
+     * **必须有 onerror**：图片 404 或 MIME 不对时（`pet://` 协议按扩展名给
+     * Content-Type，`.svg` 漏配过一次就中招）浏览器不会触发 onload，
+     * 结果就是**立绘一片空白但没有任何报错** —— 用户只会觉得软件坏了。
+     * 这里至少把它打到 console。
+     *
+     * @param {number} idx 目标槽（0 或 1）
+     * @param {string} file 清单里的文件名
+     */
+    function setImage(idx, file) {
+      const img = slots[idx]
+      const next = url(file)
+      if (img.src === next) return
+      img.onerror = () => {
+        console.error(
+          `[static-pet] 图片加载失败：${next}` +
+            `（检查文件是否存在、扩展名有没有登记在 main.js 的 MIME 表里）`,
+        )
+      }
       img.onload = () => {
         if (destroyed) return
         img.style.opacity = '1'
-        slots[front].style.opacity = '0'
-        front = next
+        slots[1 - idx].style.opacity = '0'
+        front = idx
       }
+      img.src = next
+    }
+
+    /**
+     * 换到某个键对应的图。同键不重复换（否则每次情绪刷新都要淡一次）。
+     *
+     * ⚠️ **判据必须是 currentKey，而且 currentKey 只能由这个函数维护。**
+     * 调用方不要「先把 currentKey 改了再调 show」—— 那样这里的守卫会看到
+     * key === currentKey，误判成「已经显示过了」直接 return，**图永远不换**，
+     * 而 emotion 属性却是对的（踩过：setEmotion 里就是先改了 currentKey）。
+     */
+    function show(key, { force = false } = {}) {
+      const file = images[key] || images[defaultKey]
+      if (!file) return
+      if (!force && key === currentKey) return
+      setImage(1 - front, file)
       currentKey = key
     }
 
     /** 情绪图：说话时优先显示 talk 差分 */
     function refresh() {
       if (talking && talkFile) {
-        const next = 1 - front
-        const img = slots[next]
-        if (img.src !== url(talkFile)) {
-          img.src = url(talkFile)
-          img.onload = () => {
-            if (destroyed) return
-            img.style.opacity = '1'
-            slots[front].style.opacity = '0'
-            front = next
-          }
-        }
+        setImage(1 - front, talkFile)
       } else {
-        show(currentKey)
+        // 从「说话图」切回「情绪图」时，currentKey 没变（一直是情绪键），
+        // 所以必须 force —— 否则守卫会拦下来，说完话就一直挂着说话脸。
+        show(currentKey, { force: true })
       }
     }
 
@@ -226,14 +247,12 @@
       /** @param {string} cat 中文情绪类别（开心/得意/惊讶/生气/难过/温柔/无奈/平静） */
       setEmotion(cat) {
         const key = resolveKey(images, cat)
-        if (key) {
-          currentKey = key
-          if (!talking) show(key)
-        }
+        // 注意：**不要**在这里先写 currentKey —— show() 自己会写。
+        // 先写会让 show() 的「同键不换」守卫误判，图不换但 emotion 变了。
+        if (key && !talking) show(key)
         // 情绪是有时效的：几秒后回默认，免得一直挂着某个表情
         clearTimeout(emotionTimer)
         emotionTimer = setTimeout(() => {
-          currentKey = defaultKey
           if (!talking) show(defaultKey)
         }, 6000)
       },
@@ -273,6 +292,21 @@
       getParam: () => 0, // Live2D 专有：静态立绘没有参数
       holdMouth() {
         /* 同上 */
+      },
+
+      /**
+       * 「嘴张开度」。
+       *
+       * Live2D 那边读的是 ParamMouthOpenY（连续值 0~1）。静态立绘**没有嘴型参数** ——
+       * 说话时换的是整张 talk 差分图，只有开/关两态。所以这里返回**二值**：
+       * 说话中 1，否则 0。
+       *
+       * 为什么不返回 -1（「不支持这个参数」）：`--selftest` 靠这个值判断
+       * 「嘴张得够大了，可以截图」（main.js 里 `v > 0.45` 才 capturePage）。
+       * 返回 -1 的话静态立绘永远截不到说话图，自检静默失效。
+       */
+      getMouthValue() {
+        return talking ? 1 : 0
       },
 
       setRunning(on) {

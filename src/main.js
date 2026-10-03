@@ -70,6 +70,11 @@ function registerAppProtocol() {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.webp': 'image/webp',
+    // 静态立绘的占位素材是 SVG（见 scripts/make-static-pet.mjs）。
+    // ⚠️ 少了这一行的话它会被当 application/octet-stream 返回，
+    //    <img> 拒绝解码（naturalWidth=0）、onload 永不触发 —— 表现是**立绘完全不显示**
+    //    但也不报任何错。踩过一次。
+    '.svg': 'image/svg+xml',
     '.wav': 'audio/wav',
     '.mp3': 'audio/mpeg',
     '.ogg': 'audio/ogg',
@@ -228,7 +233,9 @@ function loadConfig() {
       for (const [k, v] of Object.entries(raw.tts || {})) {
         cfg.tts[k] = v && typeof v === 'object' && !Array.isArray(v) ? { ...(TTS_DEFAULTS[k] || {}), ...v } : v
       }
-      // singing 同理（separate / rvc / zeroshot / mix 四段都是嵌套对象）
+      // singing 同理（separate / ddsp / mix 都是嵌套对象）
+      // 注意：老配置里可能还留着已废弃的 rvc / zeroshot 段 —— 合并进来无害
+      // （没有代码读它们了），但别再往模板里写。
       cfg.singing = { ...SINGING_DEFAULTS }
       for (const [k, v] of Object.entries(raw.singing || {})) {
         cfg.singing[k] = v && typeof v === 'object' && !Array.isArray(v) ? { ...(SINGING_DEFAULTS[k] || {}), ...v } : v
@@ -548,7 +555,17 @@ function createWindow() {
   // 一开始整窗穿透，等渲染层告诉我们鼠标压到了可交互区域再打开
   win.setIgnoreMouseEvents(true, { forward: true })
 
-  win.loadURL('pet://app/src/renderer/index.html')
+  /**
+   * 渲染器选择通过 URL 参数传给渲染层，而不是让它自己去读 config.json。
+   *
+   * 为什么：配置的**唯一事实来源**是 config.json，由主进程读；渲染层没有读盘能力
+   * （contextIsolation + 没有 fs）。而 `models/index.json` 记的是「装了哪个模型」，
+   * 和「用哪条渲染路」是两件事，不该混进同一个文件。
+   *
+   * 取值：live2d（默认）| static。渲染层那边不认识的值会当 live2d 处理。
+   */
+  const renderer = config.renderer === 'static' ? 'static' : 'live2d'
+  win.loadURL(`pet://app/src/renderer/index.html?renderer=${renderer}`)
 
   win.once('ready-to-show', () => win.show())
 

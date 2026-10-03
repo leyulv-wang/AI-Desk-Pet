@@ -83,6 +83,10 @@
   <script src="../../vendor/cubism4.min.js"></script>
   <script src="face.js"></script>
   <script src="voice.js"></script>
+  <!-- 静态立绘渲染器：只定义 window.petStatic 工厂，**不自动跑**。
+       真正决定用哪个渲染器的是 pet.js 的 load()（读 ?renderer= 或 models/index.json）。
+       必须排在 pet.js 之前，否则 pet.js 拿不到这个工厂。 -->
+  <script src="static-pet.js"></script>
   <script src="pet.js"></script>
   <script src="singing.js"></script>
   <script src="chat.js"></script>

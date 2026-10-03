@@ -333,6 +333,73 @@
     }, { passive: true })
   }
 
+  /**
+   * 改用静态立绘（PNGtuber）渲染。
+   *
+   * 为什么这个决定放在 pet.js 里、而不是另起一个 boot 脚本：
+   *   `load()` 本来就是「读清单 → 加载模型」的唯一入口，而且它是 **async** 的 ——
+   *   在这里替换 `window.petModel` 天然发生在下面那次**同步赋值之后**（见 413/420 行），
+   *   时序正好。另起一个脚本就要处理「谁先跑」的竞态，反而更绕。
+   *
+   * 上层（chat.js / main.js）全程只认 `window.petModel`，所以这里换掉之后
+   * **一行都不用改** —— 这正是 static-pet.js 把接口对齐的意义。
+   */
+  function useStaticRenderer(manifest) {
+    if (!window.petStatic) {
+      fail('配置要静态立绘，但 static-pet.js 没加载进来（index.html 里漏了 script 标签）。')
+      return
+    }
+
+    // 立绘目录：清单里可以用 staticDir 单独指，否则跟着模型名走
+    const dir = manifest.staticDir || manifest.model || 'Furina'
+    const spec = manifest.static || {}
+    const images = spec.images || {}
+
+    /**
+     * 没有图就**明确报错**，不要静默白屏。
+     * 「桌宠消失了但没报错」是最难查的一类问题 —— 用户只会觉得软件坏了。
+     */
+    if (!Object.keys(images).length) {
+      fail(
+        `静态立绘没有配置图片。请把 PNG 放进 assets/models/${dir}/，` +
+          `并在 assets/models/index.json 里加 static.images —— ` +
+          `键用中文情绪名（开心/难过/生气…）或 happy/sad/angry 这类英文名都认。` +
+          `详细说明见 README 的「静态立绘」一节。`,
+      )
+      return
+    }
+
+    // Live2D 那套不再需要：停掉渲染循环、藏掉空画布。
+    // （Pixi 的 Application 已经建好了，停 ticker 比 destroy 安全 —— destroy 会把
+    //   canvas 一起拆掉，而静态立绘还要挂在自己的容器里）
+    try {
+      app.ticker?.stop()
+    } catch {
+      /* 忽略 */
+    }
+    if (canvas) canvas.style.display = 'none'
+
+    // 静态立绘挂到**自己的容器**里，绝不能直接用 canvas.parentNode。
+    //
+    // canvas 的直接父节点是 <body>，而 createStaticPet() 第一件事就是
+    // `host.innerHTML = ''`（它以为 host 是专用容器）—— 传 body 进去会把
+    // 输入栏、对话面板、历史浮层、错误浮层**全部删掉**。
+    // 实测症状：body 只剩立绘和一个 script 标签，桌宠彻底没法用，而且不报任何错。
+    const host = document.createElement('div')
+    host.id = 'pet-static-host'
+    canvas.parentNode.insertBefore(host, canvas)
+
+    window.petModel = window.petStatic.createStaticPet({
+      host,
+      baseUrl: `pet://app/assets/models/${dir}`,
+      manifest: spec,
+    })
+
+    console.log(
+      `[pet] 渲染器 = 静态立绘  目录=${dir}  表情=${Object.keys(images).join(', ')}`,
+    )
+  }
+
   async function load() {
     // setup 脚本会写一份清单，告诉我们当前装的是哪个模型
     let manifest = { path: 'Hiyori/Hiyori.model3.json' }
@@ -340,6 +407,23 @@
       const res = await fetch('pet://app/assets/models/index.json')
       if (res.ok) manifest = { ...manifest, ...(await res.json()) }
     } catch { /* 没清单就用默认值 */ }
+
+    /**
+     * 用哪条渲染路。优先级：
+     *   ① URL 参数 `?renderer=`  —— main.js 按 config.json 的 pet.renderer 传下来（正常路径）
+     *   ② 清单里的 `renderer`    —— 手工装素材时写在 models/index.json 里
+     *   ③ 默认 live2d
+     *
+     * 为什么优先 URL 而不是直接读清单：配置的唯一事实来源是 config.json，
+     * 清单是「装了哪个模型」，两件事不该混在一个文件里。
+     */
+    const want =
+      new URLSearchParams(location.search).get('renderer') || manifest.renderer || 'live2d'
+
+    if (want === 'static') {
+      useStaticRenderer(manifest)
+      return
+    }
 
     const url = `pet://app/assets/models/${manifest.path}`
     // 不加缓存破坏参数，避免每次启动都重下贴图
