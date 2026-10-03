@@ -1,0 +1,62 @@
+# 依赖
+node_modules/
+.npm-cache/
+.electron-cache/
+.userdata/
+.userdata-dev/
+
+# 运行时下载的资源（体积大 / 有各自授权，不入库）
+vendor/
+assets/models/
+
+# 别人的同人作品，只自己用 —— 不入库、不再分发
+#   characters/cards/   社区角色卡（作者保留著作权）
+#   assets/lore/        从角色卡世界书导出的情境反应（衍生内容）
+#   assets/voice/clips/ 从游戏语音包里裁出来的参考音频
+# 三个缺了都不影响启动：没卡就用人设文件里那份，没情境反应就不注入，没参考音频就不出声。
+characters/cards/
+assets/lore/
+assets/voice/clips/
+
+# 个人配置（含 API Key，绝不入库）
+config.json
+#   兜底：任何位置的密钥文件都不入库（.userdata/ 里还躺着 minimax.key / mimo.key）
+*.key
+*.secret
+*.pem
+.env
+.env.*
+
+# 语音参考库索引
+#   library.json 是 `npm run voice:build` 的**生成物**，里面有两样不该公开的东西：
+#     ① 40 条游戏对白**原文**（clips/ 音频已经因为版权排除了，索引里的文本同理）
+#     ② 本机语音包路径（source 字段 = 某人的下载目录）
+#   ref*.txt / ref*.wav 同理，是那几条参考的台词和音频。缺了不影响启动：参考查不到就不出声。
+assets/voice/library.json
+assets/voice/ref*.txt
+assets/voice/ref*.wav
+assets/voice/moods/
+
+# 生成缓存（key 是语音包 clip id，属于派生数据）
+.cache/
+
+# 唱歌（DDSP-SVC 路线）
+#   songs/                用户的原曲和翻唱成品（有版权，绝不入库）
+#   singing/.venv-ddsp/   Python 环境（含 CUDA 版 torch，约 8GB）
+#   singing/repos/        第三方推理代码（DDSP-SVC，按 singing/README.md 自行 clone）
+#
+#   权重**不在项目里** —— 统一放 D:\models\DDSP-SVC\（见 singing/README.md）。
+#   repos/DDSP-SVC/pretrain 是指向那里的 junction，所以整个 repos/ 都不入库。
+songs/
+singing/.venv-ddsp/
+singing/repos/
+singing/out/
+singing/.cache/
+
+# 运行产物 / 生成物
+dist/
+*.log
+shot*.png
+tts-test-report.html
+__pycache__/
+*.pyc

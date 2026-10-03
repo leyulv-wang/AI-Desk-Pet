@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'"
+  />
+  <title>桌宠</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 桌宠本体。整窗透明，只有 .interactive 元素会接收鼠标 -->
+  <canvas id="pet-canvas"></canvas>
+
+  <!-- 历史记录：默认收起，点「历史」才展开 -->
+  <section id="history-panel" class="interactive" hidden>
+    <header id="history-header">
+      <span class="dot" id="status-dot"></span>
+      <span id="chat-title">芙宁娜</span>
+      <span id="chat-badge"></span>
+      <span class="spacer"></span>
+      <button id="btn-clear" class="icon-btn" title="清空对话记录（不影响长期记忆）">🗑</button>
+      <button id="btn-close-history" class="icon-btn" title="收起">✕</button>
+    </header>
+    <div id="chat-log"></div>
+  </section>
+
+  <!-- 唱歌：**独立浮层**，不塞进 #chat-log 里。
+       之前是寄生在对话记录里的（和 🧠 记忆面板一样），结果唱歌的歌单、进度、
+       日志和聊天记录挤在同一块滚动区里，两边都看不清 —— 它们是两种完全不同的
+       东西：对话是「看过就算」的流水，唱歌是「有状态、要操作」的控制面板。 -->
+  <section id="sing-panel" class="interactive" hidden>
+    <header id="sing-header">
+      <span class="dot sing-dot"></span>
+      <span id="sing-title">🎤 唱歌</span>
+      <span id="sing-sub" class="sing-sub"></span>
+      <span class="spacer"></span>
+      <button id="btn-close-sing" class="icon-btn" title="收起">✕</button>
+    </header>
+    <div id="sing-body"></div>
+  </section>
+
+  <!-- 字幕：只显示最近一轮，回复在这里流式出现 -->
+  <div id="subtitle">
+    <div id="sub-me" class="sub-line me"></div>
+    <div id="sub-pet" class="sub-line pet"></div>
+  </div>
+
+  <!-- 输入栏 + 所有按钮，同一行 -->
+  <form id="input-bar" class="interactive" autocomplete="off">
+    <span id="drag-handle" title="按住拖动窗口">⠿</span>
+    <input id="input-text" type="text" placeholder="和我说点什么…" />
+    <button id="btn-send" type="submit">发送</button>
+    <button id="btn-stop" type="button" hidden>停止</button>
+    <span class="bar-sep"></span>
+    <button type="button" id="btn-history" class="icon-btn" title="历史记录">≡</button>
+    <button type="button" id="btn-voice" class="icon-btn" title="语音开关">🔇</button>
+    <button type="button" id="btn-sing" class="icon-btn" title="唱歌（离线翻唱）">🎤</button>
+    <button type="button" id="btn-memory" class="icon-btn" title="长期记忆">🧠<b id="mem-count"></b></button>
+    <button type="button" id="btn-config" class="icon-btn" title="设置（打开 config.json）">⚙</button>
+    <button type="button" id="btn-collapse" class="icon-btn" title="收起输入区，只看角色">▾</button>
+    <button type="button" id="btn-hide" class="icon-btn" title="隐藏（Ctrl+Shift+P）">−</button>
+    <button type="button" id="btn-quit" class="icon-btn" title="退出（Ctrl+Shift+Q）">×</button>
+  </form>
+
+  <!-- 收起后常驻的展开按钮（否则「收起」会把按钮本身也藏掉，没法还原） -->
+  <button id="btn-expand" class="interactive" hidden title="展开输入区">▴</button>
+
+  <div id="zoom-toast"></div>
+
+  <div id="error-overlay" hidden>
+    <h2>资源还没准备好</h2>
+    <p id="error-detail"></p>
+    <pre>npm run setup</pre>
+  </div>
+
+  <script src="../../vendor/pixi.min.js"></script>
+  <!-- 必须紧跟在 pixi.js 之后：它把 Pixi 里用 new Function() 编译着色器的那段
+       换成查表实现，这样严格 CSP（禁止 unsafe-eval）下也能跑 -->
+  <script src="../../vendor/unsafe-eval.min.js"></script>
+  <script src="../../vendor/live2dcubismcore.min.js"></script>
+  <script src="../../vendor/cubism4.min.js"></script>
+  <script src="face.js"></script>
+  <script src="voice.js"></script>
+  <script src="pet.js"></script>
+  <script src="singing.js"></script>
+  <script src="chat.js"></script>
+</body>
+</html>
