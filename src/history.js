@@ -88,6 +88,7 @@ class History {
     this.nextSeq = 1
 
     this.busy = false
+    this.generation = 0
     this.timer = null
 
     this.load()
@@ -157,6 +158,9 @@ class History {
 
   clear() {
     const n = this.entries.length
+    this.generation++
+    clearTimeout(this.timer)
+    this.timer = null
     this.entries = []
     this.archives = { archivedUpToSeq: 0, blocks: [] }
     this.nextSeq = 1
@@ -191,10 +195,12 @@ class History {
    */
   async archiveIfNeeded() {
     if (this.busy) return { archived: 0 }
+    const generation = this.generation
 
     // 块数超上限 → 先把最老的几块合并成一条，腾出空间
     if (this.archives.blocks.length > this.maxBlocks) {
       await this.mergeOldest()
+      if (generation !== this.generation) return { archived: 0, cancelled: true }
     }
 
     if (!this.needsArchive() || !this.request) return { archived: 0 }
@@ -217,6 +223,7 @@ class History {
         this.request([{ role: 'system', content: PROMPT_OVERVIEW }, { role: 'user', content: transcript }]),
         this.request([{ role: 'system', content: PROMPT_ABSTRACT }, { role: 'user', content: transcript }]),
       ])
+      if (generation !== this.generation) return { archived: 0, cancelled: true }
 
       const ov = String(overview || '').trim()
       if (!ov) throw new Error('摘要为空')
@@ -250,10 +257,11 @@ class History {
 
   /** 档案太多时，把最老的几块合并成一条更精炼的（L0 层） */
   async mergeOldest(count = 3) {
-    if (this.archives.blocks.length <= this.maxBlocks || !this.request) return 0
+    if (this.busy || this.archives.blocks.length <= this.maxBlocks || !this.request) return 0
+    const generation = this.generation
     const old = this.archives.blocks.slice(0, count)
     if (old.length < 2) return 0
-
+    this.busy = true
     try {
       const joined = old
         .map((b, i) => `第 ${i + 1} 段（${fmtDate(b.fromTs)}）：${b.overview}`)
@@ -262,6 +270,7 @@ class History {
         { role: 'system', content: PROMPT_MERGE },
         { role: 'user', content: joined },
       ])
+      if (generation !== this.generation) return 0
       const text = String(merged || '').trim()
       if (!text) throw new Error('合并结果为空')
 
@@ -283,6 +292,8 @@ class History {
     } catch (e) {
       this.log(`[history] 合并档案失败: ${e.message}`)
       return 0
+    } finally {
+      this.busy = false
     }
   }
 

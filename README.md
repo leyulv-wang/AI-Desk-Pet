@@ -7,6 +7,7 @@ L1  ✅  Live2D 形象 + 文字对话（流式）+ 透明置顶穿透窗口
 L2  ✅  出声说话（本地 GPT-SoVITS 克隆音色 + 情绪选参考 + 真实音量驱动口型）
 L3     唱歌（离线翻唱管线）
 L4  ✅  换成真正的芙宁娜 Live2D 模型（VTS 免费配布版，见「模型」一节）
+```
 
 ---
 
@@ -1737,3 +1738,28 @@ facts.json + embeddings.json
 | L3 | 唱歌（离线翻唱管线） | 待做 |
 | L4 | 换成真正的芙宁娜 Live2D 模型 | ✅ 完成 |
 | — | 友好度 / Eros | **刻意不做** —— 先把功能跑通再说 |
+
+
+## 轻量陪伴界面与回归验证
+
+日常显示角色、最近一轮字幕与输入栏。聊天、记忆、唱歌在同一个按需展开的面板中切换；更多菜单中可进入设置或安静陪伴。回复生成、语音合成、音频载入与播放期间都能停止，收起输入区也会保留停止入口。Escape 可关闭面板并停止当前交互。
+
+记忆观察立即保存待整理记录；清空记忆或历史后，旧的异步整理结果不会写回。切换嵌入模型或服务地址会失效旧向量与查询缓存。自动播放关闭时继续保留文字回复。
+
+```powershell
+npm test
+npm run test:regressions
+npm run test:ui
+```
+
+`npm test` 运行 10 个离线测试套件，包含真实 Electron 渲染器中的交互检查。测试使用独立临时数据目录和模拟聊天/语音响应，不调用收费 API，也不启动 GPU 翻唱链路。真实 Live2D 检查可运行 `node scripts/test-ui.mjs --live2d`。
+
+界面参考：[N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) 的紧凑陪伴方式、[Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) 的可打断交互；本项目保留现有角色与本地语音、唱歌能力。
+
+## 芙宁娜图片桌宠
+
+运行 `node scripts/install-furina-static.mjs --activate` 安装图片并切换本地配置，重启后生效。只安装而不切换时省略 `--activate`；切回 Live2D 时把 `config.json` 的 `renderer` 改为 `live2d`。
+
+这套图片来自 [HoYoLabStickerDownload](https://github.com/iBobbyTS/HoYoLabStickerDownload) 整理的官方“派蒙的画作”：7 张 340×340 透明 PNG 映射到 8 类情绪，温柔与得意共用端杯图。聊天时保持对应情绪，待机随机换图并轻微呼吸。这里是 Q 版表情图组合，不是全身立绘或逐帧口型。
+
+下载链接和映射保存在 `scripts/furina-static.json`，本地图片保存在 `assets/models/FurinaStatic/`。图片未纳入 Git，原图保持不变；收集仓库的代码许可不代表图片获得同样授权，来源说明建议个人使用。安装前清单备份为 `assets/models/index-before-furina-static.json`。`--refresh` 可重新下载。

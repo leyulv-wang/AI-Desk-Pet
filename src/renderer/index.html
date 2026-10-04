@@ -13,32 +13,35 @@
   <!-- 桌宠本体。整窗透明，只有 .interactive 元素会接收鼠标 -->
   <canvas id="pet-canvas"></canvas>
 
-  <!-- 历史记录：默认收起，点「历史」才展开 -->
-  <section id="history-panel" class="interactive" hidden>
+  <!-- 一个按需展开的面板，三种视图不互相覆盖。 -->
+  <section id="companion-panel" class="interactive" aria-label="陪伴面板" hidden>
     <header id="history-header">
       <span class="dot" id="status-dot"></span>
       <span id="chat-title">芙宁娜</span>
-      <span id="chat-badge"></span>
+      <span id="chat-badge" hidden></span>
       <span class="spacer"></span>
-      <button id="btn-clear" class="icon-btn" title="清空对话记录（不影响长期记忆）">🗑</button>
-      <button id="btn-close-history" class="icon-btn" title="收起">✕</button>
+      <button id="btn-close-history" class="icon-btn" aria-label="收起面板" title="收起面板">×</button>
     </header>
+    <nav id="panel-tabs" role="tablist" aria-label="面板内容">
+      <button id="tab-chat" role="tab" aria-selected="true" aria-controls="history-panel">聊天</button>
+      <button id="tab-memory" role="tab" aria-selected="false" aria-controls="memory-view" tabindex="-1">记忆 <b id="mem-count"></b></button>
+      <button id="tab-sing" role="tab" aria-selected="false" aria-controls="sing-panel" tabindex="-1">唱歌</button>
+    </nav>
+  <section id="history-panel" role="tabpanel" aria-labelledby="tab-chat">
+    <div class="pane-toolbar"><span>我们的对话</span><button id="btn-clear" title="清空对话记录（不影响长期记忆）">清空对话</button></div>
+    <p id="chat-empty" class="empty-hint">想聊点什么？从下面发来第一句话吧。</p>
     <div id="chat-log"></div>
   </section>
-
-  <!-- 唱歌：**独立浮层**，不塞进 #chat-log 里。
-       之前是寄生在对话记录里的（和 🧠 记忆面板一样），结果唱歌的歌单、进度、
-       日志和聊天记录挤在同一块滚动区里，两边都看不清 —— 它们是两种完全不同的
-       东西：对话是「看过就算」的流水，唱歌是「有状态、要操作」的控制面板。 -->
-  <section id="sing-panel" class="interactive" hidden>
+  <section id="memory-view" role="tabpanel" aria-labelledby="tab-memory" hidden><div id="memory-body"></div></section>
+  <section id="sing-panel" role="tabpanel" aria-labelledby="tab-sing" hidden>
     <header id="sing-header">
-      <span class="dot sing-dot"></span>
-      <span id="sing-title">🎤 唱歌</span>
+      <span id="sing-title">音乐时光</span>
       <span id="sing-sub" class="sing-sub"></span>
       <span class="spacer"></span>
-      <button id="btn-close-sing" class="icon-btn" title="收起">✕</button>
+      <button id="btn-close-sing" class="icon-btn" title="收起面板" aria-label="收起面板">×</button>
     </header>
     <div id="sing-body"></div>
+  </section>
   </section>
 
   <!-- 字幕：只显示最近一轮，回复在这里流式出现 -->
@@ -47,25 +50,32 @@
     <div id="sub-pet" class="sub-line pet"></div>
   </div>
 
-  <!-- 输入栏 + 所有按钮，同一行 -->
+  <div id="activity-status" role="status" aria-live="polite" hidden></div>
+  <!-- 常用操作留在输入条，低频操作收进更多菜单。 -->
   <form id="input-bar" class="interactive" autocomplete="off">
     <span id="drag-handle" title="按住拖动窗口">⠿</span>
-    <input id="input-text" type="text" placeholder="和我说点什么…" />
+    <button type="button" id="btn-history" class="icon-btn" aria-label="打开聊天面板" aria-expanded="false" aria-controls="companion-panel" title="聊天面板">☰</button>
+    <input id="input-text" type="text" placeholder="和我说点什么…" aria-label="发送给桌宠的消息" />
     <button id="btn-send" type="submit">发送</button>
     <button id="btn-stop" type="button" hidden>停止</button>
-    <span class="bar-sep"></span>
-    <button type="button" id="btn-history" class="icon-btn" title="历史记录">≡</button>
-    <button type="button" id="btn-voice" class="icon-btn" title="语音开关">🔇</button>
-    <button type="button" id="btn-sing" class="icon-btn" title="唱歌（离线翻唱）">🎤</button>
-    <button type="button" id="btn-memory" class="icon-btn" title="长期记忆">🧠<b id="mem-count"></b></button>
-    <button type="button" id="btn-config" class="icon-btn" title="设置（打开 config.json）">⚙</button>
-    <button type="button" id="btn-collapse" class="icon-btn" title="收起输入区，只看角色">▾</button>
-    <button type="button" id="btn-hide" class="icon-btn" title="隐藏（Ctrl+Shift+P）">−</button>
-    <button type="button" id="btn-quit" class="icon-btn" title="退出（Ctrl+Shift+Q）">×</button>
+    <button type="button" id="btn-voice" class="icon-btn" aria-label="语音开关" title="语音开关">🔇</button>
+    <details id="more-menu">
+      <summary class="icon-btn" aria-label="更多操作" title="更多操作">⋯</summary>
+      <div class="more-actions">
+        <button type="button" id="btn-memory">记忆</button>
+        <button type="button" id="btn-sing">唱歌</button>
+        <button type="button" id="btn-config">设置</button>
+        <button type="button" id="btn-collapse">安静陪伴</button>
+        <button type="button" id="btn-hide" title="Ctrl+Shift+P 恢复">隐藏桌宠</button>
+        <button type="button" id="btn-quit" title="Ctrl+Shift+Q">退出</button>
+      </div>
+    </details>
   </form>
 
   <!-- 收起后常驻的展开按钮（否则「收起」会把按钮本身也藏掉，没法还原） -->
-  <button id="btn-expand" class="interactive" hidden title="展开输入区">▴</button>
+  <button id="btn-expand" class="interactive" hidden title="展开输入区">聊一聊</button>
+
+  <button id="btn-quiet-stop" class="interactive" hidden title="停止回复或播放">停止</button>
 
   <div id="zoom-toast"></div>
 
@@ -88,6 +98,7 @@
        必须排在 pet.js 之前，否则 pet.js 拿不到这个工厂。 -->
   <script src="static-pet.js"></script>
   <script src="pet.js"></script>
+  <script src="panels.js"></script>
   <script src="singing.js"></script>
   <script src="chat.js"></script>
 </body>

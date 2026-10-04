@@ -5,6 +5,9 @@
   "description": "二次元 AI 桌宠 · Live2D 形象 + 文字对话 + 本地 GPT-SoVITS 语音（芙宁娜）",
   "main": "src/main.js",
   "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "test:regressions": "node --test scripts/test-regressions.cjs",
+    "test:ui": "node scripts/test-ui.mjs",
     "setup": "node scripts/fetch-assets.mjs",
     "model": "node scripts/install-model.mjs",
     "check": "node scripts/check-llm.mjs",

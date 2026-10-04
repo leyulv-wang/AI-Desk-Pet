@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('pet', {
   onTtsEmotion: (fn) => ipcRenderer.on('tts:emotion', (_e, p) => fn(p)),
   /** 停止说话（用户按了停止 / 切了话题） */
   onTtsStop: (fn) => ipcRenderer.on('tts:stop', (_e, p) => fn(p)),
+  /** 本轮合成已完成，播放器队列播完后才能收起停止入口 */
+  onTtsDone: (fn) => ipcRenderer.on('tts:done', (_e, p) => fn(p)),
   /** 本地语音服务的启动进度 */
   onTtsServer: (fn) => ipcRenderer.on('tts:server', (_e, p) => fn(p)),
   ttsStatus: () => ipcRenderer.invoke('tts:status'),

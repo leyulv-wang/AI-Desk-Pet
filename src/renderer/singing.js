@@ -48,6 +48,7 @@
    */
   let playingKey = null
   let voiceSpeaking = false
+  let voiceLoading = false
 
   /** 面板里的元素句柄。建一次，后面只改内容 —— 整块重建会丢滚动位置和按钮焦点 */
   let ui = null
@@ -107,7 +108,7 @@
     ui.sub.textContent = status?.statusError
       ? '状态读取失败'
       : status?.enabled
-        ? `${status.engine} 引擎 · ${env.ok ? '环境就绪' : '环境没配好'}`
+        ? (env.ok ? '准备好了' : '需要设置')
         : '功能已关闭'
     ui.sub.className = 'sing-sub' + (status?.enabled && env.ok && !status?.statusError ? '' : ' warn')
 
@@ -115,7 +116,7 @@
     const lines = []
     if (status?.statusError) {
       lines.push(`⚠️ 取状态失败：${status.statusError}`)
-      lines.push('（这是代码/环境问题，不是配置问题 —— 别去翻 config.json）')
+      lines.push('请重新打开面板再试一次。')
     } else if (!status?.enabled) {
       lines.push('唱歌功能关着。config.json 里把 singing.enabled 改成 true 就能用。')
     } else if (!env.ok) {
@@ -128,7 +129,7 @@
     } else if (status?.lastError) {
       lines.push(`上次失败：${status.lastError}`)
     }
-    if (status?.songsDir && !running && !songs.length) {
+    if (!running && !songs.length) {
       lines.push('歌单是空的。点「＋ 选歌」，或者把音频文件丢进 songs/ 目录。')
     }
     ui.info.textContent = lines.join('\n')
@@ -159,8 +160,8 @@
      * 用户就以为「没有停止播放的手段」，只好去点 ▶ 试图停止，
      * 结果撞上 voice.js 那个 Promise 锁死的 bug，播放器整个废掉。
      */
-    ui.stop.disabled = !(running || voiceSpeaking)
-    ui.stop.textContent = running ? '停止转换' : voiceSpeaking ? '停止播放' : '停止'
+    ui.stop.disabled = !(running || voiceSpeaking || voiceLoading)
+    ui.stop.textContent = running ? '停止转换' : voiceSpeaking || voiceLoading ? '停止播放' : '停止'
     ui.setup.hidden = !(status?.enabled && !env.ok)
   }
 
@@ -168,7 +169,7 @@
     const row = document.createElement('div')
     row.className = 'sing-row'
     const isRunning = !!running && running.key === s.key
-    const isPlaying = playingKey === s.key && voiceSpeaking
+    const isPlaying = playingKey === s.key && (voiceSpeaking || voiceLoading)
     if (isRunning) row.classList.add('active')
     if (isPlaying) row.classList.add('playing')
 
@@ -232,7 +233,7 @@
 
   /** 掐掉当前任务。按钮和动作栏的「停止」都走这里 */
   async function stopJob() {
-    if (!runningJob && !busy) return
+    if (!runningJob && !busy && !status?.running) return
     pushSys('已请求停止…')
     try {
       await window.pet.singCancel()
@@ -299,12 +300,13 @@
 
     // 已经在播这首 → 再点就是「停」。用户想停止时最自然的动作就是再点那个按钮，
     // 而之前这个动作不但停不了，还会把播放器锁死（见 voice.js 里 currentResolve 的注释）。
-    if (playingKey === song.key && voiceSpeaking) {
+    if (playingKey === song.key && (voiceSpeaking || voiceLoading)) {
       stopPlayback()
       return
     }
 
     window.petVoice.unlock()
+    window.dispatchEvent(new CustomEvent('pet:playback-start'))
     window.petVoice.sing({ url: res.url, mouthUrl: res.mouthUrl, title: song.name })
     playingKey = song.key
 
@@ -325,6 +327,7 @@
     window.petVoice.stop()
     playingKey = null
     voiceSpeaking = false
+    voiceLoading = false
     const subPet = $('sub-pet')
     if (subPet?.classList.contains('singing')) {
       subPet.textContent = ''
@@ -346,7 +349,7 @@
    */
   function stopAnything() {
     if (runningJob || busy) return stopJob()
-    if (voiceSpeaking) return stopPlayback()
+    if (voiceSpeaking || voiceLoading) return stopPlayback()
   }
 
   async function forget(song) {
@@ -430,7 +433,7 @@
       if (r.failed?.length) pushSys(`有 ${r.failed.length} 个没加进来：${r.failed.join('；')}`)
       await refresh()
     })
-    const openDir = mk('打开 songs 目录', '把歌丢进去也行', () => window.pet.singOpenFolder())
+    const openDir = mk('歌曲文件夹', '把歌丢进去也行', () => window.pet.singOpenFolder())
     const setup = mk('怎么装环境', '第一次用要建 Python 环境', () => {
       pushSys('唱歌环境还没建。在 desktop-pet 目录下跑：npm run sing:setup')
       pushSys('（要下 PyTorch + 分离模型，几百 MB，只跑一次）')
@@ -447,38 +450,26 @@
   function toggle(show) {
     const shell = $('sing-panel')
     if (!shell) return
-    const next = show === undefined ? shell.hidden : show
+    const next = show === undefined ? !(window.petPanels.visible && window.petPanels.selected === 'sing') : show
 
     if (!next) {
-      shell.hidden = true
-      $('btn-sing')?.classList.remove('active')
-      panel = null
-      ui = null
+      if (window.petPanels.selected === 'sing') window.petPanels.close()
       return
     }
 
-    $('btn-sing')?.classList.add('active')
+    window.petPanels.open('sing')
+  }
 
-    /**
-     * 和对话面板**互斥**：两者都在左上角同一个位置（见 style.css），
-     * 同时展开会叠在一起，反而更挤。
-     * 这里直接改 DOM 而不是调 chat.js 的 toggleHistory() —— 那个函数没有导出，
-     * 而跨模块调用一个私有函数比改这两个属性更脆。
-     */
-    $('history-panel').hidden = true
-    $('btn-history')?.classList.remove('active')
-
+  function openView() {
     if (!panel) {
       panel = build()
       $('sing-body').replaceChildren(panel)
     }
-    shell.hidden = false
     renderSys() // 把面板关着的时候攒下的日志铺进去
     refresh()
   }
 
   window.pet.onSingProgress((p) => {
-    if (!panel) return
     progress = p
     // 本地任务状态也要跟着走 —— 界面上的进度、高亮、「停止」按钮都靠它
     if (runningJob) {
@@ -492,13 +483,15 @@
   // 不靠 setTimeout 猜时长 —— 歌曲长度是可变的，猜必错。
   window.petVoice.onState((s) => {
     const wasSpeaking = voiceSpeaking
-    voiceSpeaking = !!s.speaking
+    const wasLoading = voiceLoading
+    voiceSpeaking = !!s.speaking && s.category === '唱歌'
+    voiceLoading = !!s.loading && s.category === '唱歌'
     // 播放停了（自然放完 / 被打断 / 被 stop）→ 清掉「在播哪首」，
     // 那首歌的按钮会从「■ 停」变回「▶」
-    if (!voiceSpeaking && playingKey) playingKey = null
-    if (wasSpeaking !== voiceSpeaking && panel) render()
+    if (!voiceSpeaking && !voiceLoading && !s.busy && playingKey) playingKey = null
+    if ((wasSpeaking !== voiceSpeaking || wasLoading !== voiceLoading) && panel) render()
 
-    if (s.speaking) return
+    if (s.speaking || s.loading || s.busy) return
     const subPet = $('sub-pet')
     if (subPet?.classList.contains('singing')) {
       subPet.textContent = ''
@@ -509,7 +502,8 @@
   // 播放出问题要让人看见。
   // voice.js 那边失败时会把原因回调过来（取音频失败 / 解码失败 / 播放失败），
   // 以前只打 console，用户点了 ▶ 毫无反应也不知道为什么。
-  window.petVoice.onError(({ message }) => {
+  window.petVoice.onError(({ message, category }) => {
+    if (category !== '唱歌') return
     pushSys(`唱歌播放失败：${message}`)
   })
 
@@ -521,8 +515,9 @@
   // DOMContentLoaded 可能已经过了（脚本在 body 末尾），兜一下
   if (document.readyState !== 'loading') wire()
 
-  // 点对话面板时把唱歌面板收掉 —— 两者在同一个位置，互斥（toggle 里有另一半）
-  $('btn-history')?.addEventListener('click', () => toggle(false))
+  window.addEventListener('pet:panel', ({ detail }) => {
+    if (detail.tab === 'sing') openView()
+  })
 
   /** 给自检脚本用的把手 */
   window.petSinging = {

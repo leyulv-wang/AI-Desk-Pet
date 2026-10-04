@@ -200,6 +200,8 @@ class Memory {
     request,
     embed = null,
     embedModel = '',
+    embedIdentity = embedModel,
+    embedEnabled = true,
     vecMinScore = 0.4,
     vecMargin = 0.1,
     embedTimeoutMs = 800,
@@ -211,6 +213,10 @@ class Memory {
     this.request = request
     this.embed = embed
     this.embedModel = embedModel
+    this.embedIdentity = embedIdentity
+    this._embeddingEnabled = embedEnabled !== false
+    this.generation = 0
+    this._embedGeneration = 0
     this.log = log
     /** 查询向量化的超时；超了本轮退回 BM25 */
     this.embedTimeoutMs = Number(embedTimeoutMs) || 800
@@ -306,7 +312,8 @@ class Memory {
 
     // 新格式：{ model, vectors }
     if (raw.vectors && typeof raw.vectors === 'object') {
-      if (raw.model && this.embedModel && raw.model !== this.embedModel) {
+      if ((raw.model && this.embedModel && raw.model !== this.embedModel) ||
+          (raw.identity && raw.identity !== this.embedIdentity)) {
         this.log(
           `[memory] 向量模型变了（${raw.model} → ${this.embedModel}），旧向量作废，将重新生成`
         )
@@ -325,7 +332,28 @@ class Memory {
   }
 
   get embeddingsEnabled() {
-    return typeof this.embed === 'function'
+    return this._embeddingEnabled && typeof this.embed === 'function'
+  }
+
+  /** 配置变更后，旧请求和旧向量都不能跨向量空间复用。 */
+  configureEmbedding({ model = this.embedModel, identity = model, enabled = true, vecMinScore, vecMargin, embedTimeoutMs }) {
+    if (identity !== this.embedIdentity || model !== this.embedModel || enabled !== this._embeddingEnabled) {
+      this._embedGeneration++
+      this.queryCache.clear()
+      this._embedPromise = null
+      this.embedding = false
+      if (identity !== this.embedIdentity || model !== this.embedModel) {
+        this.embeddings = {}
+        this.embDim = null
+      }
+    }
+    this.embedModel = model
+    this.embedIdentity = identity
+    this._embeddingEnabled = enabled !== false
+    if (Number.isFinite(Number(vecMinScore))) this.vecMinScore = Number(vecMinScore)
+    if (Number.isFinite(Number(vecMargin))) this.vecMargin = Number(vecMargin)
+    if (Number(embedTimeoutMs) > 0) this.embedTimeoutMs = Number(embedTimeoutMs)
+    this.saveEmbeddings()
   }
 
   saveFacts() { writeJson(this.factsPath, this.facts) }
@@ -334,7 +362,7 @@ class Memory {
     // 带上模型名 —— 下次换模型时才知道旧向量该作废。
     // 用紧凑格式：缩进会让这个文件膨胀近一倍（1024 维 × 几百条会到几十 MB），
     // 而且这文件是机器读的，不需要好看。
-    writeJson(this.embPath, { model: this.embedModel, dim: this.embDim || null, vectors: this.embeddings }, 0)
+    writeJson(this.embPath, { model: this.embedModel, identity: this.embedIdentity, dim: this.embDim || null, vectors: this.embeddings }, 0)
   }
 
   // -------------------------------------------------------------- 向量化
@@ -345,11 +373,17 @@ class Memory {
     // 并发调用时复用同一个 Promise —— 否则后到的会静默返回 0，
     // 表现就是「补向量」按钮误报"没有需要补的"
     if (this._embedPromise) return this._embedPromise
-    this._embedPromise = this._doEmbedMissing().finally(() => { this._embedPromise = null })
+    const promise = this._doEmbedMissing().finally(() => {
+      if (this._embedPromise === promise) this._embedPromise = null
+    })
+    this._embedPromise = promise
     return this._embedPromise
   }
 
   async _doEmbedMissing() {
+    const generation = this.generation
+    const embedGeneration = this._embedGeneration
+    const valid = () => generation === this.generation && embedGeneration === this._embedGeneration
     const todo = this.facts.filter((f) => !Array.isArray(this.embeddings[f.id]))
     if (!todo.length) return 0
 
@@ -360,10 +394,12 @@ class Memory {
       for (let i = 0; i < todo.length; i += BATCH) {
         const batch = todo.slice(i, i + BATCH)
         const vecs = await this.embed(batch.map((f) => f.text))
+        if (!valid()) return 0
         if (!Array.isArray(vecs) || vecs.length !== batch.length) {
           throw new Error(`向量数量不匹配：要 ${batch.length} 得到 ${vecs?.length}`)
         }
         batch.forEach((f, j) => {
+          if (!this.facts.some(current => current.id === f.id)) return
           const v = vecs[j]
           if (Array.isArray(v) && v.length) {
             this.embDim = v.length
@@ -382,7 +418,7 @@ class Memory {
       // 失败保留未向量化状态，下次重试；不影响 BM25 召回
       this.log(`[memory] 向量化失败（将降级为 BM25）: ${e.message}`)
     } finally {
-      this.embedding = false
+      if (valid()) this.embedding = false
     }
     return done
   }
@@ -448,11 +484,14 @@ class Memory {
   async embedQuery(text) {
     if (!this.embeddingsEnabled) return null
     if (this.queryCache.has(text)) return this.queryCache.get(text)
+    const generation = this.generation
+    const embedGeneration = this._embedGeneration
 
     try {
       // 超时兜底：向量化有尾部延迟（实测某个模型中位 111ms 但最慢 2846ms），
       // 偶发卡顿比稳定慢更难受。超了就这一轮退回 BM25，不让人干等。
       const vecs = await withTimeout(this.embed([text]), this.embedTimeoutMs, '查询向量化')
+      if (generation !== this.generation || embedGeneration !== this._embedGeneration) return null
       const v = vecs?.[0]
       if (Array.isArray(v) && v.length) {
         if (this.queryCache.size > 100) this.queryCache.clear()
@@ -471,6 +510,7 @@ class Memory {
   observe(userText, assistantText) {
     if (!userText || !userText.trim()) return
     this.pending.push({ user: userText, assistant: assistantText || '', ts: Date.now() })
+    this.savePending()
     if (this.pending.length >= 8) this.schedule(1000)
     else this.schedule(30000)
   }
@@ -501,6 +541,7 @@ class Memory {
     }
 
     this.busy = true
+    const generation = this.generation
     const batch = this.pending.slice()
     try {
       const transcript = batch
@@ -526,11 +567,13 @@ class Memory {
         { role: 'system', content: EXTRACT_SYSTEM },
         { role: 'user', content: `${knownBlock}${transcript}` },
       ])
+      if (generation !== this.generation) return { added: 0, cancelled: true }
 
       const extracted = parseFacts(raw)
       const added = this.addFacts(extracted, batch[0]?.ts || Date.now(), known)
 
-      this.pending = this.pending.slice(batch.length)
+      const processed = new Set(batch)
+      this.pending = this.pending.filter(entry => !processed.has(entry))
       this.savePending()
       this.log(
         `[memory] 整理 ${batch.length} 轮（带了 ${known.length} 条已知事实）→ 新增 ${added} 条` +
@@ -546,6 +589,7 @@ class Memory {
       return { added: 0, error: e.message }
     } finally {
       this.busy = false
+      if (this.pending.length) this.schedule(30000)
     }
   }
 
@@ -659,6 +703,12 @@ class Memory {
 
   clear() {
     const n = this.facts.length
+    this.generation++
+    this._embedGeneration++
+    clearTimeout(this.timer)
+    this.timer = null
+    this._embedPromise = null
+    this.embedding = false
     this.facts = []
     this.pending = []
     this.embeddings = {}
@@ -821,6 +871,7 @@ class Memory {
   flush() {
     if (this._recallSaveTimer) { clearTimeout(this._recallSaveTimer); this._recallSaveTimer = null }
     if (this._recallDirty) { this._recallDirty = false; this.saveFacts() }
+    this.savePending()
   }
 
   // -------------------------------------------------------------- 开环记忆

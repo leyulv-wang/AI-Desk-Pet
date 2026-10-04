@@ -132,7 +132,12 @@
     function setImage(idx, file) {
       const img = slots[idx]
       const next = url(file)
-      if (img.src === next) return
+      if (img.src === next && img.complete && img.naturalWidth) {
+        img.style.opacity = '1'
+        slots[1 - idx].style.opacity = '0'
+        front = idx
+        return
+      }
       img.onerror = () => {
         console.error(
           `[static-pet] 图片加载失败：${next}` +
@@ -320,7 +325,12 @@
       },
 
       setBottomGap(px) {
-        stage.style.paddingBottom = `${Math.max(0, Number(px) || 0)}px`
+        const gap = Math.max(0, Number(px) || 0)
+        // 图片是绝对定位，stage 的 padding 不会抬高它。
+        for (const img of slots) {
+          img.style.bottom = `${gap}px`
+          img.style.maxHeight = `calc(100% - ${gap}px)`
+        }
       },
 
       relayout() {
@@ -355,6 +365,7 @@
 
     // 首图
     show(defaultKey, { force: true })
+    api.setBottomGap(96)
     scheduleIdle()
 
     return api

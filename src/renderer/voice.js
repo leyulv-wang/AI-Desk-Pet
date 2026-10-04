@@ -46,6 +46,10 @@
    * 就把整个播放器永久锁死 —— 表现是「之后点哪首歌都没反应」。
    */
   let currentResolve = null
+  let pendingLoad = null
+  let pendingItem = null
+  let gapTimer = null
+  let playbackGeneration = 0
 
   /** 累计统计：确认「到底有没有真的出声」，而不只是「收到了通知」 */
   const totals = { played: 0, playedMs: 0, failed: 0, peak: 0, lastText: '' }
@@ -127,8 +131,8 @@
     return out
   }
 
-  async function load(url) {
-    const res = await fetch(url)
+  async function load(url, signal) {
+    const res = await fetch(url, { signal })
     if (!res.ok) throw new Error(`取音频失败 ${res.status}`)
     const buf = await res.arrayBuffer()
     ensureCtx()
@@ -136,7 +140,8 @@
   }
 
   function emitState() {
-    const s = { speaking: !!current, queued: queue.length, text: current?.text || '' }
+    const s = { speaking: !!current, loading: !!pendingLoad, queued: queue.length,
+      busy: playing, text: current?.text || pendingItem?.text || '', category: current?.category || pendingItem?.category || '' }
     for (const fn of listeners.state) {
       try {
         fn(s)
@@ -147,20 +152,33 @@
   }
 
   /** 播一条，返回 Promise，播完/被打断时 resolve */
-  function playOne(item) {
-    return new Promise(async (resolve) => {
+  function playOne(item, generation) {
+    return new Promise((resolve) => {
+      const controller = new AbortController()
+      pendingLoad = controller
+      pendingItem = item
+      const valid = () => generation === playbackGeneration && !controller.signal.aborted
+      let settled = false
+      const done = () => {
+        if (settled) return
+        settled = true
+        if (currentResolve === done) currentResolve = null
+        if (pendingLoad === controller) { pendingLoad = null; pendingItem = null }
+        resolve()
+      }
+      currentResolve = done
+      emitState()
+      ;(async () => {
       let buffer
       try {
-        buffer = await load(item.url)
+        buffer = await load(item.url, controller.signal)
       } catch (e) {
+        if (!valid()) return done()
         totals.failed++
         emitError(`取音频失败：${e.message}（${item.url}）`, item)
-        return resolve()
+        return done()
       }
-
-      const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.connect(gain)
+      if (!valid()) return done()
 
       /**
        * 口型包络的来源可以和播放的音频**不是同一个文件**。
@@ -174,18 +192,24 @@
       let envBuffer = buffer
       if (item.mouthUrl && item.mouthUrl !== item.url) {
         try {
-          envBuffer = await load(item.mouthUrl)
+          envBuffer = await load(item.mouthUrl, controller.signal)
         } catch (e) {
+          if (!valid()) return done()
           emitError(`口型轨解码失败，退回用成品算包络：${e.message}`, item)
           envBuffer = buffer
         }
       }
+      if (!valid()) return done()
+      pendingLoad = null
+      pendingItem = null
+      const source = ctx.createBufferSource()
+      source.buffer = buffer
+      source.connect(gain)
 
       const env = buildEnvelope(envBuffer)
       const durationMs = buffer.duration * 1000
 
       current = { source, env, startedAt: performance.now(), durationMs, text: item.text, category: item.category }
-      currentResolve = resolve
       totals.played++
       totals.playedMs += durationMs
       totals.lastText = item.text || ''
@@ -196,15 +220,17 @@
         if (current && current.source === source) {
           current = null
           // 队列里还有下一段才停 —— 最后一段后面不需要拖一个静默尾巴
-          const wait = queue.length ? (Number(item.pauseAfter) || GAP_FALLBACK_MS) : 0
-          setTimeout(() => {
-            currentResolve = null
+          const pause = Number(item.pauseAfter)
+          const wait = queue.length ? (Number.isFinite(pause) && pause >= 0 ? pause : GAP_FALLBACK_MS) : 0
+          gapTimer = setTimeout(() => {
+            gapTimer = null
+            if (!valid()) return done()
             emitState()
-            resolve()
+            done()
           }, wait)
         } else {
           // 已经被 stop() 提前 resolve 过了（resolve 是幂等的，再调一次无副作用）
-          resolve()
+          done()
         }
       }
 
@@ -213,24 +239,34 @@
       } catch (e) {
         emitError(`播放失败：${e.message}`, item)
         current = null
-        currentResolve = null
-        resolve()
+        done()
       }
+      })().catch((e) => {
+        if (valid()) {
+          totals.failed++
+          current = null
+          emitError(`播放失败：${e.message}`, item)
+        }
+        done()
+      })
     })
   }
 
   async function pump() {
     if (playing) return
+    const generation = playbackGeneration
     playing = true
     try {
-      while (queue.length) {
+      while (generation === playbackGeneration && queue.length) {
         const item = queue.shift()
-        await playOne(item)
+        await playOne(item, generation)
       }
     } finally {
-      playing = false
-      current = null
-      emitState()
+      if (generation === playbackGeneration) {
+        playing = false
+        current = null
+        emitState()
+      }
     }
   }
 
@@ -261,7 +297,14 @@
 
     /** 打断：停掉正在播的、清空队列、嘴闭上 */
     stop() {
+      playbackGeneration++
       queue.length = 0
+      playing = false
+      pendingLoad?.abort()
+      pendingLoad = null
+      pendingItem = null
+      clearTimeout(gapTimer)
+      gapTimer = null
 
       // 先把「解开 pump」需要的两样东西摘出来，再动 source ——
       // 顺序反了（比如先摘 onended）就会丢掉唯一的 resolve 路径，播放器永久锁死
@@ -302,6 +345,7 @@
     get pending() {
       return queue.length
     },
+    get busy() { return playing || !!pendingLoad || !!current },
 
     /** 真出过声没有 —— 自动化测试就看这个 */
     get stats() {

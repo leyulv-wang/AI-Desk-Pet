@@ -590,12 +590,9 @@ function createWindow() {
 
   // 配置热重载：打开 config.json 编辑会让窗口失焦，切回来时自动重读
   win.on('focus', () => {
-    const before = `${config.apiKeySource}|${config.model}|${config.baseUrl}|${config.systemPrompt}|${config.character}|${JSON.stringify(config.tts)}|${JSON.stringify(config.singing)}`
-    config = loadConfig()
-    const after = `${config.apiKeySource}|${config.model}|${config.baseUrl}|${config.systemPrompt}|${config.character}|${JSON.stringify(config.tts)}|${JSON.stringify(config.singing)}`
-    if (before !== after) {
-      tts.reload(config.tts)
-      singing.reload(config.singing)
+    const next = loadConfig()
+    if (JSON.stringify(config) !== JSON.stringify(next)) {
+      applyRuntimeConfig(next)
       if (!win.webContents.isDestroyed()) {
         win.webContents.send('config:changed', {
           mock: mockMode(),
@@ -606,6 +603,9 @@ function createWindow() {
           characterId: config.characterData?.id || null,
           characterName: config.characterData?.name || null,
           live2d: config.characterData?.live2d || null,
+          tapLines: config.characterData?.tapLines || [],
+          fpsActive: config.fpsActive,
+          fpsIdle: config.fpsIdle,
         })
       }
     }
@@ -947,6 +947,8 @@ const memory = new Memory({
   },
   embed: (texts) => callEmbed(texts),
   embedModel: (config.embedding || EMBED_DEFAULTS).model,
+  embedIdentity: embeddingIdentity(config.embedding || EMBED_DEFAULTS),
+  embedEnabled: (config.embedding || EMBED_DEFAULTS).enabled,
   vecMinScore: (config.embedding || EMBED_DEFAULTS).vecMinScore,
   vecMargin: (config.embedding || EMBED_DEFAULTS).vecMargin,
   embedTimeoutMs: (config.embedding || EMBED_DEFAULTS).embedTimeoutMs,
@@ -1039,6 +1041,26 @@ const singing = createSinging({
  * 所以合成前要等一下这个 promise（有超时兜底，服务起不来也不会卡住）。
  */
 let voiceServerReady = null
+
+function embeddingIdentity(embedding) {
+  return `${String(embedding.baseUrl).replace(/\/+$/, '')}|${embedding.model}`
+}
+
+function applyRuntimeConfig(next) {
+  config = next
+  const embedding = config.embedding || EMBED_DEFAULTS
+  memory.configureEmbedding({ ...embedding, identity: embeddingIdentity(embedding) })
+  memory.decayEnabled = config.decayEnabled !== false
+  memory.maxSurfaces = Number(config.maxSurfaces) || 2
+  history.recentCount = Number(config.recentCount) || 16
+  history.archiveAfter = Number(config.archiveAfter) || 40
+  history.maxBlocks = Number(config.maxBlocks) || 8
+  tts.reload(config.tts)
+  singing.reload(config.singing)
+  if (!config.tts?.enabled || config.tts?.autoplay === false) {
+    for (const controller of inflight.values()) controller.stopSpeech?.()
+  }
+}
 
 /**
  * 拼最终的 system prompt。
@@ -1208,6 +1230,11 @@ async function mockStream(text, signal, onDelta) {
 }
 
 ipcMain.handle('chat:start', (event, { id, text }) => {
+  // 新消息接管语音；上一轮即使文字已结束，也不能继续往播放器塞音频。
+  for (const [previousId, previous] of inflight) {
+    previous.abort()
+    if (!event.sender.isDestroyed()) event.sender.send('tts:stop', { id: previousId })
+  }
   const controller = new AbortController()
   inflight.set(id, controller)
 
@@ -1217,6 +1244,9 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
 
   const userText = String(text || '').trim()
   let assistantText = ''
+  const historyGeneration = history.generation
+  const memoryGeneration = memory.generation
+  let textFinished = false
 
   // ---- 语音流水线
   //
@@ -1229,7 +1259,7 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
   // 情绪标签在流的最开头就会到（提示词要求的），所以第一个句子入队时
   // 情绪已经确定了，不用等整段回复。
   const speech = {
-    enabled: !!(config.tts?.enabled) && tts.enabled,
+    enabled: !!(config.tts?.enabled) && config.tts?.autoplay !== false && tts.enabled,
     category: '平静',
     source: null,
     emotionDone: false,
@@ -1266,6 +1296,18 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
     seed: null,
   }
   const splitter = createSplitter(config.tts?.split || {})
+  controller.stopSpeech = () => {
+    speech.dropped = true
+    speech.enabled = false
+    speech.queue.length = 0
+    send('tts:done', { id })
+  }
+
+  function releaseTurn() {
+    if (!textFinished || speech.running || speech.queue.length) return
+    if (inflight.get(id) === controller) inflight.delete(id)
+    send('tts:done', { id })
+  }
 
   /** 合成队列：一条一条来（GPT-SoVITS 是单 worker，并发只会互相排队） */
   async function pumpQueue() {
@@ -1334,6 +1376,8 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
       }
     } finally {
       speech.running = false
+      if (speech.dropped || controller.signal.aborted) speech.queue.length = 0
+      releaseTurn()
     }
   }
 
@@ -1470,7 +1514,8 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
       if (err.name === 'AbortError' || controller.signal.aborted) send('chat:done', { id, aborted: true })
       else send('chat:error', { id, message: err.message })
     } finally {
-      inflight.delete(id)
+      textFinished = true
+      releaseTurn()
 
       // 落盘用的是「去掉情绪标签」的正文吗？—— 不，历史要存**带标签的原文**。
       //
@@ -1484,11 +1529,9 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
       // 记忆抽取才用剥掉标签的正文 —— 标签是格式噪音，不该变成关于用户的事实。
       const { category, cleaned } = emotion.resolveEmotion(assistantText)
       const hasTag = /^\s*[[【（(]/.test(assistantText)
-      const stored = hasTag ? assistantText : `[${category}]${cleaned}`
-      if (userText) {
+      const stored = !assistantText.trim() ? '' : hasTag ? assistantText : `[${category}]${cleaned}`
+      if (userText && historyGeneration === history.generation) {
         history.append(userText, stored)
-        const r = await history.archiveIfNeeded().catch(() => null)
-        if (r?.archived) console.log(`[history] 本轮顺带归档了 ${r.archived} 条`)
         if (!hasTag) console.log(`[tts] 她这轮漏了情绪标签，已按「${category}」补进历史，避免示范跑偏`)
       }
       // 记忆抽取用的是「她**说出口**的话」，不是整段回复。
@@ -1505,7 +1548,7 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
       // 整段旁白这些边界，而且有 27 项回归测试守着（scripts/test-spoken.mjs）。
       // 历史那边**不剥** —— 角色扮演需要旁白保持连贯，两边要求正好相反。
       const forMemory = spokenOf(emotion.stripAllTags(cleaned))
-      if (forMemory && userText) memory.observe(userText, forMemory)
+      if (forMemory && userText && memoryGeneration === memory.generation) memory.observe(userText, forMemory)
     }
   }
 
@@ -1640,6 +1683,9 @@ ipcMain.handle('tts:set-enabled', (_event, on) => {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n', 'utf8')
     config = loadConfig()
     tts.reload(config.tts)
+    if (!config.tts.enabled) {
+      for (const controller of inflight.values()) controller.stopSpeech?.()
+    }
     return { ok: true, enabled: !!config.tts.enabled }
   } catch (e) {
     return { ok: false, error: e.message }
@@ -1754,15 +1800,7 @@ ipcMain.handle('pet:open-config', async () => {
 })
 
 ipcMain.handle('pet:reload-config', () => {
-  config = loadConfig()
-  // 向量判定参数也跟着更新（不然改了要重启）
-  const emb = config.embedding || EMBED_DEFAULTS
-  memory.vecMinScore = Number(emb.vecMinScore)
-  memory.vecMargin = Number(emb.vecMargin)
-  memory.embedModel = emb.model
-  // 语音后端/语速/角色也一起生效
-  tts.reload(config.tts)
-  singing.reload(config.singing)
+  applyRuntimeConfig(loadConfig())
   if (win && !win.webContents.isDestroyed()) {
     win.webContents.send('config:changed', {
       mock: mockMode(),
@@ -1773,6 +1811,9 @@ ipcMain.handle('pet:reload-config', () => {
       characterId: config.characterData?.id || null,
       characterName: config.characterData?.name || null,
       live2d: config.characterData?.live2d || null,
+      tapLines: config.characterData?.tapLines || [],
+      fpsActive: config.fpsActive,
+      fpsIdle: config.fpsIdle,
     })
   }
   return {
@@ -1814,6 +1855,10 @@ ipcMain.handle('ui:reset-zoom', () => {
 ipcMain.handle('history:load', () => history.entries)
 
 ipcMain.handle('history:clear', () => {
+  for (const [id, controller] of inflight) {
+    controller.abort()
+    if (win && !win.webContents.isDestroyed()) win.webContents.send('tts:stop', { id })
+  }
   const n = history.clear()
   return { ok: true, removed: n }
 })
@@ -1965,6 +2010,9 @@ if (!app.requestSingleInstanceLock()) {
     globalShortcut.unregisterAll()
     // 只关我们自己拉起来的那个语音服务。你自己起的，桌宠不碰。
     voiceServer.stop()
+    singing.cancel()
+    memory.flush()
+    for (const controller of inflight.values()) controller.abort()
     try {
       fs.unlinkSync(PID_PATH)
     } catch {

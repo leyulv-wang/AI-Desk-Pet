@@ -37,6 +37,8 @@
   let currentText = ''
   let currentUserText = ''
   let mockMode = false
+  let speechPending = false
+  let playbackState = { speaking: false, loading: false, busy: false }
 
   // ------------------------------------------------------------ 状态
 
@@ -49,8 +51,29 @@
 
   function setBusy(busy) {
     sendBtn.disabled = busy
-    stopBtn.hidden = !busy
+    refreshPlaybackControls()
     if (!busy) setDot(mockMode ? 'mock' : '')
+  }
+
+  function refreshPlaybackControls() {
+    const audioBusy = playbackState.busy || window.petVoice.busy
+    stopBtn.hidden = !(currentId || speechPending || audioBusy)
+    $('btn-quiet-stop').hidden = !collapsed || stopBtn.hidden
+    stopBtn.textContent = currentId ? '停止' : playbackState.category === '唱歌' ? '停止唱歌' : '停止说话'
+    const text = currentId ? (currentText ? '正在回复…' : '正在思考…') :
+      playbackState.loading ? '正在载入音频…' : playbackState.speaking ?
+        (playbackState.category === '唱歌' ? '正在唱歌' : '正在说话') : speechPending ? '正在准备语音…' : ''
+    $('activity-status').textContent = text
+    $('activity-status').hidden = !text
+  }
+
+  function stopInteraction() {
+    const id = currentId || activeTurnId
+    activeTurnId = null
+    speechPending = false
+    window.petVoice.stop()
+    if (id) window.pet.chatStop(id).catch(e => pushLog('err', `停止失败：${e.message}`))
+    refreshPlaybackControls()
   }
 
   async function refreshMemCount() {
@@ -112,15 +135,16 @@
     }
     appendRich(el, text)
     logEl.appendChild(el)
+    $('chat-empty').hidden = true
     logEl.scrollTop = logEl.scrollHeight
     return el
   }
 
   function toggleHistory(show) {
-    const next = show === undefined ? historyPanel.hidden : show
-    historyPanel.hidden = !next
-    $('btn-history').classList.toggle('active', next)
-    if (next) logEl.scrollTop = logEl.scrollHeight
+    if (show === false) window.petPanels.close()
+    else if (show === true) window.petPanels.open('chat')
+    else window.petPanels.toggle('chat')
+    logEl.scrollTop = logEl.scrollHeight
   }
 
   // ------------------------------------------------------------ 收起输入区
@@ -137,8 +161,13 @@
     subtitleEl.classList.toggle('hidden', collapsed)
     $('btn-expand').hidden = !collapsed
     $('btn-collapse').classList.toggle('active', collapsed)
+    if (collapsed) {
+      window.petPanels.close()
+      $('more-menu').open = false
+    }
     if (persist) window.pet.setUiState({ chatCollapsed: collapsed })
     window.petModel?.setBottomGap?.(collapsed ? GAP_COLLAPSED : GAP_EXPANDED)
+    refreshPlaybackControls()
   }
 
   // ------------------------------------------------------------ 缩放
@@ -164,6 +193,7 @@
   function send(text) {
     const trimmed = text.trim()
     if (!trimmed || currentId) return
+    stopInteraction()
 
     pushLog('me', trimmed)
     subMeEl.textContent = trimmed
@@ -173,6 +203,7 @@
 
     currentId = `c${Date.now()}`
     activeTurnId = currentId
+    speechPending = voiceState.enabled && voiceState.autoplay !== false
     window.__ttsErrShown = false
     window.__ttsRefs = []
     lastPetEntry = null
@@ -187,7 +218,12 @@
     if (!voiceReady()) window.petModel?.setTalking(true)
 
     // 上下文（人格 / 事实记忆 / 分层历史）全在主进程组装，这里只给这一句
-    window.pet.chatStart(currentId, trimmed)
+    window.pet.chatStart(currentId, trimmed).catch(e => {
+      pushLog('err', `消息发送失败：${e.message}`)
+      speechPending = false
+      activeTurnId = null
+      finish({ aborted: true })
+    })
   }
 
   function finish({ aborted = false } = {}) {
@@ -196,6 +232,7 @@
     subPetEl.classList.remove('streaming', 'thinking')
 
     if (aborted) {
+      speechPending = false
       if (!currentText) subPetEl.textContent = '（已停止）'
       pushLog('sys', `（已停止）${currentText || ''}`.trim())
     }
@@ -289,6 +326,7 @@
     }
     currentText += delta
     subPetEl.textContent = displayText(currentText)
+    refreshPlaybackControls()
   })
 
   // 推理模型（deepseek-flash / v4-pro）会先默默想一段；
@@ -316,7 +354,11 @@
     window.petModel?.setTalking(false)
     currentId = null
     currentText = ''
+    speechPending = false
+    activeTurnId = null
+    window.petVoice.stop()
     setBusy(false)
+    setDot('error')
   })
 
   // ------------------------------------------------------------ 语音
@@ -331,13 +373,15 @@
   let tapLines = []
 
   function voiceReady() {
-    return !!(voiceState.enabled && voiceState.ready)
+    return !!(voiceState.enabled && voiceState.ready && voiceState.autoplay !== false)
   }
 
   // 播放状态 → 保持满帧 + 记录她是不是在说话
   window.petVoice.onState((s) => {
+    playbackState = s
     window.petModel?.setVoiceActive(s.speaking)
     subPetEl.classList.toggle('speaking', s.speaking)
+    refreshPlaybackControls()
   })
 
   window.pet.onTtsEmotion(({ id, category, source }) => {
@@ -351,6 +395,7 @@
   // 所以这里不能拿 currentId 判断（那时它已经被清空了），要用不随 finish 清零的 activeTurnId。
   window.pet.onTtsSegment((seg) => {
     if (seg.id !== activeTurnId) return
+    if (!voiceState.enabled || voiceState.autoplay === false) return
     if (!seg.ok) {
       // 合成失败别装没事 —— 只提示一次，免得刷屏
       if (!window.__ttsErrShown) {
@@ -374,12 +419,30 @@
       ms: seg.ms,
       cached: seg.cached,
     })
-    window.petVoice.enqueue({ url: seg.url, text: seg.text, category: seg.category, index: seg.index })
+    window.petVoice.enqueue({ url: seg.url, text: seg.text, category: seg.category, index: seg.index, pauseAfter: seg.pauseAfter })
     // 第一条合成回来就把参考音频记到这一轮的日志上（后面几句是同一个参考，不用重复标）
     appendVoiceChip(lastPetEntry, seg.ref)
   })
 
-  window.pet.onTtsStop(() => window.petVoice.stop())
+  window.pet.onTtsStop(({ id } = {}) => {
+    if (id && id !== activeTurnId && id !== currentId) return
+    activeTurnId = null
+    speechPending = false
+    window.petVoice.stop()
+    refreshPlaybackControls()
+  })
+  window.pet.onTtsDone(({ id }) => {
+    if (id !== activeTurnId) return
+    speechPending = false
+    refreshPlaybackControls()
+  })
+  window.addEventListener('pet:playback-start', () => {
+    stopInteraction()
+    if (currentId) finish({ aborted: true })
+  })
+  window.petVoice.onError(({ message, category }) => {
+    if (category !== '唱歌') pushLog('err', message)
+  })
 
   /**
    * 本地语音服务的启动进度。
@@ -406,15 +469,24 @@
     try {
       const s = await window.pet.ttsStatus()
       voiceState = s
+      if (!s.enabled || s.autoplay === false) {
+        speechPending = false
+        if (playbackState.category !== '唱歌') {
+          activeTurnId = null
+          window.petVoice.stop()
+        }
+      }
       const btn = $('btn-voice')
       if (btn) {
         btn.textContent = s.enabled ? (s.ready ? '🔊' : '⚠️') : '🔇'
         btn.title = !s.enabled
-          ? '语音已关（点击开启，需要本地 GPT-SoVITS 在跑）'
+          ? '语音已关闭，点击开启'
           : s.ready
             ? `语音已开（${s.backend}）· 点击关闭`
             : `语音开着但后端连不上：${s.detail}`
         btn.classList.toggle('on', !!(s.enabled && s.ready))
+        btn.setAttribute('aria-pressed', String(!!s.enabled))
+        btn.setAttribute('aria-label', s.enabled ? '关闭语音' : '开启语音')
       }
       if (s.character?.name) $('chat-title').textContent = s.character.name
     } catch (e) {
@@ -456,6 +528,9 @@
   window.pet.onConfigChanged((status) => {
     const wasMock = mockMode
     applyStatus(status)
+    refreshVoiceState()
+    if (status.characterName) $('chat-title').textContent = status.characterName
+    if (status.live2d) window.petModel?.setFaceConfig?.(status.live2d)
     if (wasMock && !status.mock) pushLog('sys', `已连上 ${status.model}（Key 来自 ${status.apiKeySource}）`)
     else if (!wasMock && status.mock) pushLog('sys', 'API Key 没了，切回演示模式。')
   })
@@ -465,18 +540,30 @@
   // ------------------------------------------------------------ 绑定
 
   formEl.addEventListener('submit', (e) => { e.preventDefault(); send(inputEl.value) })
-  stopBtn.addEventListener('click', () => { if (currentId) window.pet.chatStop(currentId) })
-  inputEl.addEventListener('keydown', (e) => { if (e.key === 'Escape' && currentId) window.pet.chatStop(currentId) })
+  stopBtn.addEventListener('click', stopInteraction)
+  $('btn-quiet-stop').addEventListener('click', stopInteraction)
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (currentId || speechPending || window.petVoice.busy)) {
+      e.preventDefault()
+      stopInteraction()
+    }
+  })
 
   $('btn-quit').addEventListener('click', () => window.pet.quit())
   $('btn-hide').addEventListener('click', () => window.pet.hide())
   $('btn-collapse').addEventListener('click', () => setCollapsed(!collapsed))
   $('btn-expand').addEventListener('click', () => setCollapsed(false))
-  $('btn-close-history').addEventListener('click', () => toggleHistory(false))
   $('btn-history').addEventListener('click', () => toggleHistory())
 
   $('btn-clear').addEventListener('click', async () => {
+    stopInteraction()
     await window.pet.clearHistory()
+    currentId = null
+    currentText = ''
+    lastPetEntry = null
+    subMeEl.textContent = ''
+    subPetEl.textContent = ''
+    setBusy(false)
     logEl.innerHTML = ''
     pushLog('sys', '对话记录已清空（长期记忆不受影响）。')
   })
@@ -488,18 +575,18 @@
 
   // ---- 记忆面板
   // 单例：已经开着就关掉，绝不再追加一份（之前每次点都会往对话里塞新内容）
-  $('btn-memory').addEventListener('click', toggleMemoryPanel)
+  $('btn-memory').addEventListener('click', () => window.petPanels.toggle('memory'))
+  window.addEventListener('pet:panel', ({ detail }) => {
+    if (detail.tab === 'memory') toggleMemoryPanel().catch(e => pushLog('err', `读取记忆失败：${e.message}`))
+    if (detail.tab === 'chat') logEl.scrollTop = logEl.scrollHeight
+  })
 
   async function toggleMemoryPanel() {
-    const existing = logEl.querySelector('.memory-panel')
+    const existing = $('memory-body').querySelector('.memory-panel')
     if (existing) {
-      existing.remove()
-      $('btn-memory').classList.remove('active')
+      await existing.refresh?.()
       return
     }
-
-    toggleHistory(true)
-    $('btn-memory').classList.add('active')
 
     const panel = document.createElement('div')
     panel.className = 'memory-panel'
@@ -526,12 +613,10 @@
           : `${s.embedded}/${s.facts} 已向量化`
 
       const lines = [
-        `【事实记忆】${s.valid ?? s.facts} 条有效` +
+        `记住了 ${s.valid ?? s.facts} 件事` +
           (s.invalid ? ` · ${s.invalid} 条已失效` : '') +
           ` · 待整理 ${s.pending} 条${s.busy ? '（整理中…）' : ''}`,
-        `  召回 BM25 ⊕ 向量（RRF 融合） · ${vec}`,
-        `  遗忘曲线 ${s.decayEnabled ? '开' : '关'} · 有效事实平均强度 ${(s.avgStrength ?? 1).toFixed(2)}` +
-          `（越老越低，但不会被删）`,
+        s.embeddingsEnabled ? `能按含义找回相关记忆：${vec}` : '目前按文字查找相关记忆',
       ]
       if (s.openLoops) {
         lines.push(
@@ -542,13 +627,10 @@
       }
       if (h) {
         lines.push(
-          `【对话历史】原文 ${h.entries} 条 · 未归档 ${h.unarchived} 条`,
-          `  已压缩成 ${h.blocks} 段档案${h.busy ? '（压缩中…）' : ''}` +
-            ` · 最近 16 条 + 档案概览一起进上下文`
+          `保留 ${h.entries} 条对话，${h.blocks} 段往事摘要${h.busy ? '（整理中…）' : ''}`
         )
       }
-      lines.push(`  抽取/摘要模型 ${s.extractModel} · 向量模型 ${s.embedModel}`)
-      if (!s.hasEmbedKey) lines.push('⚠️ 没找到向量化 Key，正在降级为纯 BM25')
+      if (s.embeddingsEnabled && !s.hasEmbedKey) lines.push('语义检索暂不可用，仍可按文字查找记忆。')
 
       note(lines.join('\n'))
       refreshMemCount()
@@ -576,14 +658,14 @@
       await render()
     })
 
-    mk('补向量', async () => {
+    mk('完善检索', async () => {
       note('正在向量化…')
       const r = await window.pet.memoryEmbed()
       note(r.embedded ? `新增 ${r.embedded} 条向量。` : '没有需要补的。')
       await render()
     })
 
-    mk('列出', async () => {
+    mk('查看记忆', async () => {
       const { facts, embedded } = await window.pet.memoryList()
       const has = new Set(embedded || [])
       if (!facts.length) { note('还没记住任何事。多聊几句，或点「整理记忆」。'); return }
@@ -597,21 +679,21 @@
         out += invalid.slice(0, 5).map((f) => `  ✗ ${f.text}`).join('\n')
         if (invalid.length > 5) out += `\n  …还有 ${invalid.length - 5} 条`
       }
-      note(out + '\n（● = 有向量，○ = 仅 BM25）')
+      note(out + '\n（● = 支持语义查找，○ = 支持文字查找）')
     })
 
     mk('打开文件', () => window.pet.memoryOpen())
 
-    mk('清空', async () => {
+    mk('清空记忆', async () => {
       const r = await window.pet.memoryClear()
       note(`已清空 ${r.removed} 条记忆。`)
       refreshMemCount()
     }, true)
 
-    mk('关闭', () => { panel.remove(); $('btn-memory').classList.remove('active') })
+    mk('收起面板', () => window.petPanels.close())
 
-    logEl.appendChild(panel)
-    logEl.scrollTop = logEl.scrollHeight
+    panel.refresh = render
+    $('memory-body').appendChild(panel)
     await render()
   }
 
@@ -694,6 +776,7 @@
   function applyStatus(status) {
     mockMode = !!status.mock
     maxHistory = status.maxHistory || 20
+    if (Array.isArray(status.tapLines)) tapLines = status.tapLines
     if (status.fpsActive || status.fpsIdle) {
       window.petModel?.setFpsConfig?.({ active: status.fpsActive, idle: status.fpsIdle })
     }

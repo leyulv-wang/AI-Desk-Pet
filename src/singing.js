@@ -238,8 +238,12 @@ function createSinging({ root, userDataDir, config = {}, log = () => {} }) {
       st.size,
       Math.round(st.mtimeMs),
       cfg.engine,
-      // 影响音色的参数都要进 key：换音色/共振峰就是另一份产物，不能互相覆盖
-      cfg.engine === 'ddsp' ? `${cfg.ddsp.voice}:${cfg.ddsp.spkId}:${cfg.ddsp.formant}` : '',
+      // 所有实际传入推理管线的音频参数都参与缓存标识。
+      JSON.stringify({
+        voice: cfg.ddsp.voice, spkId: cfg.ddsp.spkId, formant: cfg.ddsp.formant, seed: cfg.ddsp.seed,
+        separateModel: cfg.separate.model,
+        vocalGain: cfg.mix.vocalGain, instrumentalGain: cfg.mix.instrumentalGain, targetLufs: cfg.mix.targetLufs,
+      }),
     ].join('|')
     return crypto.createHash('sha1').update(sig).digest('hex').slice(0, 12)
   }
