@@ -32,7 +32,7 @@ const argOf = (n) => {
   return i >= 0 ? argv[i + 1] : undefined
 }
 const PORT = Number(argOf('--port') || 9222)
-const SING_DIR = path.join(ROOT, '.userdata', 'singing')
+const SING_DIR = path.join(process.env.PET_USER_DATA || path.join(ROOT, '.userdata'), 'singing')
 
 // ---------------------------------------------------------------- 挑一份产物
 let key = argOf('--key')
@@ -50,8 +50,8 @@ if (!key) {
 }
 const dir = path.join(SING_DIR, key)
 const meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8'))
-const url = `pet://app/.userdata/singing/${key}/${meta.output || 'mixed.wav'}`
-const mouth = `pet://app/.userdata/singing/${key}/${meta.mouth || 'vocal_converted.wav'}`
+const url = `pet://app/audio/singing/${key}/${meta.output || 'mixed.wav'}`
+const mouth = meta.mouth ? `pet://app/audio/singing/${key}/${meta.mouth}` : null
 console.log(`  产物 ${key}  (${meta.song}, ${meta.duration}s)`)
 console.log(`  成品 ${url}`)
 console.log(`  口型 ${mouth}\n`)

@@ -40,13 +40,7 @@ assets/voice/moods/
 # 生成缓存（key 是语音包 clip id，属于派生数据）
 .cache/
 
-# 唱歌（DDSP-SVC 路线）
-#   songs/                用户的原曲和翻唱成品（有版权，绝不入库）
-#   singing/.venv-ddsp/   Python 环境（含 CUDA 版 torch，约 8GB）
-#   singing/repos/        第三方推理代码（DDSP-SVC，按 singing/README.md 自行 clone）
-#
-#   权重**不在项目里** —— 统一放 D:\models\DDSP-SVC\（见 singing/README.md）。
-#   repos/DDSP-SVC/pretrain 是指向那里的 junction，所以整个 repos/ 都不入库。
+# 用户歌曲、缓存，以及已废弃管线的遗留环境（保留忽略，避免上传私人音频和权重）。
 songs/
 singing/.venv-ddsp/
 singing/repos/

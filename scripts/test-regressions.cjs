@@ -115,7 +115,7 @@ test('audio configuration changes invalidate a completed singing result', t => {
   fs.writeFileSync(path.join(output, 'mixed.wav'), 'old result')
   fs.writeFileSync(path.join(output, 'meta.json'), JSON.stringify({ output: 'mixed.wav' }))
   assert.ok(singing.listSongs()[0].result)
-  for (const config of [{ ddsp: { seed: 123 } }, { separate: { model: 'another-model' } }, { mix: { vocalGain: 2 } }]) {
+  for (const config of [{ prompt: '轻柔女声重新演唱，保留原曲的节奏旋律' }, { sampleRate: 32000 }, { bitrate: 128000 }]) {
     singing.reload(config)
     assert.notEqual(singing.listSongs()[0].key, first)
     assert.equal(singing.listSongs()[0].result, null)
@@ -213,6 +213,7 @@ test('autoplay off skips chat synthesis while still saving dialogue', async t =>
   gate.resolve({ ok: true, url: 'disabled.wav' })
   await tick()
   assert.equal(events.filter(e => e.channel === 'tts:segment').length, 0)
+  assert.ok(events.some(e => e.channel === 'tts:emotion' && e.category === '平静'))
   assert.equal(history.entries.length, 2)
   assert.equal(memory.pending.length, 1)
 })

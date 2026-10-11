@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
+const { resolvePetFile } = require('../src/app-protocol')
 const ROOT = path.resolve(__dirname, '..')
 app.setPath('userData', process.env.PET_UI_TEST_DIR)
 protocol.registerSchemesAsPrivileged([{ scheme: 'pet', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
@@ -12,7 +13,7 @@ const defaults = {
   'ui:get-state': {}, 'pet:get-status': { mock: true, characterName: '芙宁娜' },
   'history:load': [], 'memory:stats': { facts: 3, pending: 0, embedded: 3, avgStrength: 1, hasEmbedKey: true, embeddingsEnabled: true },
   'history:stats': { entries: 0, unarchived: 0, blocks: 0 },
-  'singing:status': { enabled: true, engine: 'ddsp', env: { ok: true } }, 'singing:list': [],
+  'singing:status': { enabled: true, backend: 'minimax', env: { ok: true } }, 'singing:list': [],
 }
 for (const channel of new Set([...fs.readFileSync(path.join(ROOT, 'src/preload.js'), 'utf8').matchAll(/invoke\('([^']+)'/g)].map(m => m[1]))) {
   ipcMain.handle(channel, (_event, payload) => {
@@ -24,13 +25,11 @@ for (const channel of new Set([...fs.readFileSync(path.join(ROOT, 'src/preload.j
 }
 app.whenReady().then(async () => {
   protocol.handle('pet', async request => {
-    const file = path.resolve(ROOT, decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, ''))
-    if (!file.startsWith(ROOT + path.sep)) return new Response('', { status: 403 })
-    if (!fs.existsSync(file)) return new Response('', { status: 404 })
-    const response = await net.fetch(pathToFileURL(file).toString())
-    const headers = new Headers(response.headers)
-    headers.set('Content-Type', ({ '.js': 'text/javascript', '.html': 'text/html', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml' })[path.extname(file)] || 'application/octet-stream')
-    return new Response(response.body, { headers })
+    if (!process.argv.includes('--live2d') && new URL(request.url).pathname.startsWith('/vendor/')) return new Response('', { status: 404 })
+    const resolved = resolvePetFile(request.url, { root: ROOT, ttsDir: path.join(process.env.PET_UI_TEST_DIR, 'tts-cache'), singingDir: path.join(process.env.PET_UI_TEST_DIR, 'singing') })
+    if (resolved.status !== 200) return new Response('', { status: resolved.status })
+    const response = await net.fetch(pathToFileURL(resolved.file).toString())
+    return new Response(response.body, { headers: { 'Content-Type': resolved.type } })
   })
   const win = new BrowserWindow({ width: 460, height: 720, frame: false, show: false, transparent: true,
     webPreferences: { preload: path.join(ROOT, 'src/preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false } })
@@ -48,7 +47,8 @@ app.whenReady().then(async () => {
     catch (e) { failures.push(name); console.error('FAIL ' + name + ': ' + e.message) }
   }
   if (renderer === 'static') {
-    await check('static Furina loads PNG emotions above the composer', async () => {
+    await check('static Furina loads PNG emotions without Live2D above the composer', async () => {
+      assert.equal(await js('typeof window.PIXI'), 'undefined')
       await js(`window.petModel.setBottomGap(96);window.petModel.setEmotion('难过')`)
       await js(`Promise.all(Array.from(document.querySelectorAll('.static-pet-img')).filter(i=>i.src).map(i=>i.decode()))`)
       await settle()
@@ -62,6 +62,12 @@ app.whenReady().then(async () => {
         const expected = emotion === '难过' ? 'furina-05.png' : 'furina-01.png'
         assert.ok((await js(`Array.from(document.querySelectorAll('.static-pet-img')).find(i=>i.style.opacity==='1')?.src`)).endsWith(expected))
       }
+    })
+  } else {
+    await check('Live2D runtime loads on demand and model startup succeeds', async () => {
+      assert.equal(await js('Promise.resolve(window.petModel.ready)'), true)
+      assert.equal(await js('document.getElementById("error-overlay").hidden'), true)
+      assert.equal(await js('typeof window.PIXI.live2d.Live2DModel'), 'function')
     })
   }
   await check('memory and singing share one mutually exclusive panel', async () => {

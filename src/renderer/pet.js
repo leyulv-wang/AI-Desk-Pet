@@ -25,26 +25,7 @@
     errorOverlay.hidden = false
   }
 
-  if (!window.PIXI) {
-    fail('PIXI 没加载进来 —— 先跑 `npm run setup` 下载 vendor/ 里的库。')
-    return
-  }
-  if (!PIXI.live2d) {
-    fail('Live2D 插件没加载进来（Cubism Core 或 cubism4.min.js 缺失）—— 先跑 `npm run setup`。')
-    return
-  }
-
-  // ---------------------------------------------------------------- 舞台
-
-  const app = new PIXI.Application({
-    view: canvas,
-    backgroundAlpha: 0,          // 透明窗口，不能有底色
-    antialias: true,
-    autoDensity: true,
-    resolution: window.devicePixelRatio || 1,
-    resizeTo: window,
-    powerPreference: 'low-power',
-  })
+  let app = null
 
   // ---------------------------------------------------------------- 帧率治理
 
@@ -77,6 +58,7 @@
   }
 
   function setFps(fps) {
+    if (!app) return
     if (fps === currentFps) return
     currentFps = fps
     // 渲染循环和模型更新循环是两个 ticker，都要限
@@ -95,6 +77,7 @@
   function setRunning(on) {
     if (on === running) return
     running = on
+    if (!app) return
     if (on) {
       app.start()
       PIXI.Ticker.shared.start()
@@ -373,7 +356,7 @@
     // （Pixi 的 Application 已经建好了，停 ticker 比 destroy 安全 —— destroy 会把
     //   canvas 一起拆掉，而静态立绘还要挂在自己的容器里）
     try {
-      app.ticker?.stop()
+      app?.ticker.stop()
     } catch {
       /* 忽略 */
     }
@@ -425,6 +408,20 @@
       return
     }
 
+    // Keep WebGL dependencies out of the static renderer's startup path.
+    for (const file of ['pixi.min.js', 'unsafe-eval.min.js', 'live2dcubismcore.min.js', 'cubism4.min.js']) {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = `pet://app/vendor/${file}`
+        script.onload = resolve
+        script.onerror = () => reject(new Error(`Live2D 依赖 ${file} 未安装，请运行 npm run setup。`))
+        document.head.appendChild(script)
+      })
+    }
+    if (!window.PIXI || !PIXI.live2d) throw new Error('Live2D 运行库未安装，请运行 npm run setup 或切换静态图片模式。')
+    app = new PIXI.Application({ view: canvas, backgroundAlpha: 0, antialias: true,
+      autoDensity: true, resolution: window.devicePixelRatio || 1,
+      resizeTo: window, powerPreference: 'low-power' })
     const url = `pet://app/assets/models/${manifest.path}`
     // 不加缓存破坏参数，避免每次启动都重下贴图
     model = await PIXI.live2d.Live2DModel.from(url, {
@@ -449,6 +446,10 @@
     // 帧率治理挂在渲染 ticker 上（优先级放低，别跟渲染抢）
     app.ticker.add(governorTick, null, PIXI.UPDATE_PRIORITY.LOW)
     setFps(FPS.active)
+    if (!running) {
+      app.stop()
+      PIXI.Ticker.shared.stop()
+    }
 
     console.log('[pet] 模型已加载：', manifest.path)
   }

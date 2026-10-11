@@ -87,43 +87,27 @@
       "voice": "",
       "timeoutMs": 60000
     },
-    "cache": { "enabled": true, "maxFiles": 400 },
+    "cache": {
+      "enabled": true,
+      "maxFiles": 400
+    },
     "recentRefMemory": 6,
     "_切句": "minChars=短于这个字数的句子先攒着跟下一句拼（句尾常是「好。」「嗯。」这种收束句，调到 10 免得它们各自成段 —— 短段废片率高）。maxChars=超过这个字数还没遇到句号就硬切。",
-    "split": { "minChars": 10, "maxChars": 48 }
+    "split": {
+      "minChars": 10,
+      "maxChars": 48
+    }
   },
-
-  "_唱歌": "离线翻唱：给一首原曲 → 分离出人声 → 换成角色的音色 → 混回伴奏 → 在桌宠里唱。和说话是两条独立链路，只是共用一张嗓子。跑 `npm run sing:setup` 体检环境，缺什么它会说。",
-  "_唱歌-怎么用": "把音频丢进 desktop-pet/songs/ 目录（或启动桌宠后点 🎤 → ＋选歌），然后点「唱」。一首歌等 30 秒~2 分钟，跑完**自动开唱**。唱歌时按钮会变成「■ 停止」，底部停止键也能停播放。",
-  "_唱歌-引擎": "只有 ddsp 一种：DDSP-SVC + 训练好的音色模型（权重放 D:\\models\\DDSP-SVC\\voices\\<名字>\\，见 singing/README.md）。试过 RVC，但公开的芙宁娜 RVC 模型训练不足，实测全面不如 DDSP —— 排查过程写在 singing/README.md 里，别再走一遍。",
-  "_唱歌-缓存": "产物按「歌曲 + 音色参数」哈希缓存，同一首歌第二次点是毫秒级（命中就不启 Python）。产物在 .userdata/singing/<key>/。",
   "singing": {
     "enabled": true,
-    "engine": "ddsp",
-    "separate": {
-      "_模型": "demucs 的模型。实测 htdemucs / htdemucs_ft / mdx_extra 三者输出相关系数 0.998+ —— 换分离器几乎不改变结果，所以用最快的 htdemucs。",
-      "model": "htdemucs",
-      "cache": true
-    },
-    "ddsp": {
-      "_voice": "音色模型名，对应 D:\\models\\DDSP-SVC\\voices\\<名字>\\{model.pt, config.yaml}。",
-      "voice": "芙宁娜",
-      "_spkId": "说话人编号，**1-based**。DDSP 内部是 spk_embed(spk_id-1)，传 0 会索引越界、触发 CUDA device-side assert（会把显卡驱动搞成 TDR）。单说话人固定 1。",
-      "spkId": 1,
-      "_formant": "共振峰偏移，只改音色不改音高。实测 0 已是最优（往两边调相似度都下降），不用动。",
-      "formant": 0,
-      "_seed": "随机种子。DDSP 的噪声激励没种子就每次输出都不同（实测同配置两跑波形差 0.46）。固定它才能复现。",
-      "seed": 1
-    },
-    "mix": {
-      "_增益": "人声/伴奏的增益（dB）。实测 0 / -1 时人声与伴奏约 +0.2dB，比例合适。",
-      "vocalGain": 0,
-      "instrumentalGain": -1,
-      "_响度": "输出响度（LUFS）。-14 是流媒体常用值。",
-      "targetLufs": -14,
-      "_格式": "wav（无损，大）/ m4a（小很多）。",
-      "format": "wav"
-    },
-    "timeoutMs": 1800000
-  }
+    "backend": "minimax",
+    "baseUrl": "",
+    "apiKey": "",
+    "model": "music-cover",
+    "prompt": "清澈明亮的女声演唱，带有舞台感与细腻情绪，保留原曲旋律和节奏。",
+    "sampleRate": 44100,
+    "bitrate": 256000,
+    "timeoutMs": 300000
+  },
+  "_唱歌": "云端翻唱：参考音频提交给 MiniMax music-cover，需音乐接口权限。地址与 Key 留空则沿用 tts.minimax。音色独立于说话 voiceId，不保证相同。"
 }

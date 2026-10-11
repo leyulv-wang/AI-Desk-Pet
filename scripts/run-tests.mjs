@@ -1,7 +1,7 @@
 /** 离线回归入口。真实AI、TTS和GPU推理仍使用各自显式的集成测试命令。 */
 import { spawnSync } from 'node:child_process'
 const suites = [
-  ['--test', 'scripts/test-regressions.cjs'],
+  ['--test', 'scripts/test-regressions.cjs', 'scripts/test-api-runtime.cjs'],
   ['scripts/test-ui.mjs'],
   ...['test-splitter.mjs', 'test-spoken.mjs', 'test-card.mjs', 'test-decay-loop.mjs',
     'test-embedding-switch.mjs', 'test-lore.mjs', 'check-wiring.mjs', 'check-pet-renderers.mjs']

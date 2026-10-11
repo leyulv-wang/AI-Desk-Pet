@@ -1,21 +1,4 @@
-/**
- * 唱歌面板
- *
- * 放在历史浮层里（和 🧠 记忆面板同一个位置），因为它是「低频、看一眼就关」的东西，
- * 不该常驻占着本来就紧张的窗口空间。
- *
- * 三件事要在这个文件里做对：
- *
- * ① **进度必须看得见。** 一首歌要几分钟，只有一个转圈的话用户会以为卡死了。
- *    所以管线每推进一个阶段就报一次（分离 / 转换 / 混音），界面上是阶段名 + 百分比。
- *
- * ② **播放要等成品出来**，而且口型跟的是**人声轨**不是成品 ——
- *    这条约束钉在 petVoice.sing() 上，这里只负责把两个地址都传对。
- *
- * ③ **按钮的状态要跟真实状态走**，不是跟点击走。
- *    点了「唱」之后按钮要立刻禁用（不然连点会起第二个任务），
- *    跑完/失败/取消之后要恢复 —— 这几条路径都得走同一个 render()。
- */
+/** 云端翻唱面板：选择参考音频、生成、播放与停止。 */
 ;(function () {
   const $ = (id) => document.getElementById(id)
 
@@ -108,7 +91,7 @@
     ui.sub.textContent = status?.statusError
       ? '状态读取失败'
       : status?.enabled
-        ? (env.ok ? '准备好了' : '需要设置')
+        ? (env.ok ? '云端翻唱' : '需要设置')
         : '功能已关闭'
     ui.sub.className = 'sing-sub' + (status?.enabled && env.ok && !status?.statusError ? '' : ' warn')
 
@@ -121,7 +104,9 @@
       lines.push('唱歌功能关着。config.json 里把 singing.enabled 改成 true 就能用。')
     } else if (!env.ok) {
       lines.push(`⚠️ ${env.detail}`)
-      if (env.needsSetup) lines.push('（这一步是一次性的：建 venv + 装依赖，几百 MB）')
+    } else {
+      lines.push('参考音频会发送到 MiniMax；需要音乐接口权限。翻唱音色独立于说话音色。')
+      lines.push('参考音频：6 秒至 6 分钟，最大 50MB。')
     }
     if (running) {
       lines.push(`正在唱：${running.song}`)
@@ -161,7 +146,7 @@
      * 结果撞上 voice.js 那个 Promise 锁死的 bug，播放器整个废掉。
      */
     ui.stop.disabled = !(running || voiceSpeaking || voiceLoading)
-    ui.stop.textContent = running ? '停止转换' : voiceSpeaking || voiceLoading ? '停止播放' : '停止'
+    ui.stop.textContent = running ? '停止等待' : voiceSpeaking || voiceLoading ? '停止播放' : '停止'
     ui.setup.hidden = !(status?.enabled && !env.ok)
   }
 
@@ -210,7 +195,7 @@
      *    点不动，人只会以为程序卡了。（所以正在跑的这首，按钮要变成「停止」）
      *
      * ② **播放和转换是两条完全独立的路**：播放走渲染层的 Web Audio，
-     *    转换走主进程的 Python。转换在跑的时候，听别的已经唱好的歌完全没问题 ——
+     *    生成走主进程的云端 API。转换在跑的时候，听别的已经唱好的歌完全没问题 ——
      *    以前把 ▶ 也一起禁掉，等于白白锁住了唯一还能用的功能。
      */
     if (isRunning) {
@@ -222,10 +207,10 @@
           ? mk('■ 停', '停止播放这首', () => stopPlayback(), 'danger')
           : mk('▶', '让她唱这首（不影响正在跑的转换）', () => play(s), 'primary'),
       )
-      row.appendChild(mk('重唱', '删掉已有产物，重新转换一遍', () => start(s, true), '', busy))
+      row.appendChild(mk('重唱', '删掉已有产物，重新生成一遍', () => start(s, true), '', busy))
     } else {
-      // 一次只跑一个转换（GPU 只有一块），但按钮不禁用 —— 点了会说清楚为什么不能跑
-      row.appendChild(mk('唱', '开始转换（要等几分钟）', () => start(s, false), 'primary', false))
+      // 一次只跑一个转换（避免重复提交付费请求），但按钮不禁用 —— 点了会说清楚为什么不能跑
+      row.appendChild(mk('唱', '开始云端翻唱（要等几分钟）', () => start(s, false), 'primary', false))
     }
     row.appendChild(mk('🗑', '删掉产物（下次要重算）', () => forget(s), '', isRunning))
     return row
@@ -245,7 +230,7 @@
   // ---------------------------------------------------------------- 动作
 
   async function start(song, force) {
-    // 一次只跑一个转换：GPU 只有一块，并发只会互相拖慢。
+    // 一次只跑一个转换：避免重复提交付费请求，并发只会互相拖慢。
     // 但**要说清楚为什么不能跑** —— 静默 return 会让人以为按钮坏了。
     if (busy) {
       pushSys(`《${runningJob?.song || '另一首'}》还在转换中。等它跑完，或者点它的「■ 停止」掐掉。`)
@@ -254,7 +239,7 @@
     busy = true
     runningJob = { key: song.key, song: song.name, stage: '准备中', pct: 0, startedAt: Date.now() }
     progress = { stage: '准备中', pct: 0 }
-    pushSys(`开始转换《${song.name}》…`)
+    pushSys(`开始云端翻唱《${song.name}》…`)
     render()
 
     let r
@@ -281,7 +266,7 @@
         pushSys(
           r.cached
             ? `《${song.name}》之前唱过，直接开唱。`
-            : `《${song.name}》唱好了（${Math.round((r.ms || 0) / 1000)} 秒），开始唱。`,
+            : `《${song.name}》云端翻唱完成，开始播放。`,
         )
         play(fresh)
       } else {
@@ -340,7 +325,7 @@
   /**
    * 底部「停止」键的统一入口。
    *
-   * 这个键以前只绑在「停止转换」上，所以只在转换跑的时候可用 ——
+   * 这个键以前只绑在「停止生成」上，所以只在转换跑的时候可用 ——
    * 用户在放歌的时候看它是灰的，就以为「没有停止播放的手段」。
    * 现在按当前**实际在发生什么**决定它停什么：
    *   有转换在跑 → 先停转换（它更耗时、更该被打断）
@@ -353,8 +338,11 @@
   }
 
   async function forget(song) {
-    await window.pet.singForget(song.key)
-    await refresh()
+    try {
+      const result = await window.pet.singForget(song.key)
+      if (!result.ok) pushSys(`清理失败：${result.error}`)
+      await refresh()
+    } catch (e) { pushSys(`清理失败：${e.message}`) }
   }
 
   /**
@@ -434,9 +422,9 @@
       await refresh()
     })
     const openDir = mk('歌曲文件夹', '把歌丢进去也行', () => window.pet.singOpenFolder())
-    const setup = mk('怎么装环境', '第一次用要建 Python 环境', () => {
-      pushSys('唱歌环境还没建。在 desktop-pet 目录下跑：npm run sing:setup')
-      pushSys('（要下 PyTorch + 分离模型，几百 MB，只跑一次）')
+    const setup = mk('API 设置说明', '查看云端翻唱配置', () => {
+      pushSys('在 config.json 的 singing 中设置 API；默认沿用 tts.minimax 的地址和 Key。')
+      pushSys('MiniMax 音乐接口需要单独权限；说话成功不代表翻唱接口可用。')
     })
     const stop = mk('停止', '停掉正在跑的转换，或者正在放的歌', () => stopAnything())
 

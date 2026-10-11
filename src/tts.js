@@ -1,9 +1,11 @@
+const { fetchBuffered } = require('./api-request')
+const { AsyncLocalStorage } = require('node:async_hooks')
 /**
  * TTS —— 把一句回复变成一段能播的 wav。
  *
  * 设计要点：
  *
- *   ① 后端可插拔。默认 gptsovits（本地、音色克隆质量最好、零成本），
+ *   ① 后端可插拔。默认 minimax（云端 API），
  *      也能切 siliconflow（云端 CosyVoice2），或者直接 none 关掉。
  *      换角色/换后端的成本应该只是改配置，不是改代码。
  *
@@ -15,7 +17,7 @@
  *      一次 GPT-SoVITS 推理在 5060 上要 1~3 秒，缓存命中是 0ms。
  *
  *   ④ 不碰播放。播放和嘴型在渲染层（那里才有 WebAudio），
- *      这里只把 wav 写到磁盘并给一个 pet://app/.userdata/tts-cache/<file> 地址。
+ *      这里只把 wav 写到磁盘并给一个 pet://app/audio/tts/<file> 地址。
  */
 const fs = require('node:fs')
 const path = require('node:path')
@@ -26,7 +28,7 @@ const { pickReference, charCount } = require('./voice-select')
 /** 默认配置 —— 用户 config.json 里的 tts 段会和这些做深合并 */
 const DEFAULTS = {
   enabled: false,
-  backend: 'gptsovits',
+  backend: 'minimax',
 
   /** 回复一到就自动念出来。false 时只在气泡上留个「念」按钮 */
   autoplay: true,
@@ -541,8 +543,11 @@ function tcpProbe(baseUrl, timeoutMs = 800) {  return new Promise((resolve) => {
  * @param {function} [opts.log]
  * @param {function} [opts.resolveKey] (name) => string|null，给 siliconflow 找 key
  */
-function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => null }) {
-  const cfg = deepMerge(DEFAULTS, config || {})
+function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => null, fetchImpl }) {
+  let currentConfig = deepMerge(DEFAULTS, config || {})
+  const requests = new AsyncLocalStorage()
+  // Async work keeps its original settings even when the user reloads config.
+  const cfg = new Proxy({}, { get: (_target, key) => (requests.getStore()?.config || currentConfig)[key] })
 
   fs.mkdirSync(cacheDir, { recursive: true })
 
@@ -554,12 +559,7 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
    * 所以走 pet://app/.userdata/tts-cache/…，
    * 主进程那边的协议处理器只对这一个子目录放行，别的不给看。
    */
-  const urlPrefix = (() => {
-    const rel = path.relative(root, cacheDir).split(path.sep).join('/')
-    return rel.startsWith('..') ? null : `pet://app/${rel}`
-  })()
-
-  const urlFor = (file) => (urlPrefix ? `${urlPrefix}/${path.basename(file)}` : `file://${file.replace(/\\/g, '/')}`)
+  const urlFor = file => `pet://app/audio/tts/${encodeURIComponent(path.basename(file))}`
 
   const clean = (s) => String(s || '').trim()
 
@@ -651,22 +651,14 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
 
   // ---- 缓存
 
-  function cacheKey(text, refId, seed, speed) {
-    // seed 也要进 key：虽然它是确定值（同输入同种子），但它会随情绪类别变，
-    // 不带上就可能把「开心」念的缓存当成「平静」念的复用。
-    // speed 是语速校准后的实际值，同理必须进 key。
-    const sig = cfg.backend === 'gptsovits'
-      ? [
-          cfg.backend,
-          refId,
-          text,
-          speed ?? cfg.gptsovits.speedFactor,
-          cfg.gptsovits.sampleSteps,
-          cfg.gptsovits.temperature,
-          cfg.gptsovits.textSplitMethod,
-          seed,
-        ].join('|')
-      : [cfg.backend, cfg.siliconflow.model, cfg.siliconflow.voice, text].join('|')
+  function cacheKey(text, refId, seed, speed, category) {
+    const backend = { ...(cfg[cfg.backend] || {}) }
+    delete backend.apiKey
+    delete backend.timeoutMs
+    if (cfg.backend === 'mimo') backend.sampleHash = crypto.createHash('sha256').update(mimoSample()).digest('hex')
+    const sig = JSON.stringify({ version: 2, backend: cfg.backend, settings: backend,
+      text, category, refId, seed, speed, trimSilence: cfg.trimSilence,
+      normalizeLoudness: cfg.normalizeLoudness, loudness: cfg.loudness })
     return crypto.createHash('sha1').update(sig).digest('hex').slice(0, 20)
   }
 
@@ -782,22 +774,20 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
       parallel_infer: true,
     }
 
-    const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), g.timeoutMs)
     let res
     try {
-      res = await fetch(`${g.baseUrl.replace(/\/+$/, '')}/tts`, {
+      res = await fetchBuffered(`${g.baseUrl.replace(/\/+$/, '')}/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: ac.signal,
+        signal: requests.getStore()?.signal,
+        timeoutMs: g.timeoutMs,
+        ...(fetchImpl ? { fetchImpl } : {}),
       })
     } catch (e) {
-      clearTimeout(timer)
       const why = e.name === 'AbortError' ? `超过 ${g.timeoutMs}ms 没返回` : e.message
       throw new Error(`GPT-SoVITS 连不上（${g.baseUrl}）：${why}`)
     }
-    clearTimeout(timer)
 
     if (!res.ok) {
       const t = await res.text().catch(() => '')
@@ -816,21 +806,19 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
     if (!key) throw new Error('SiliconFlow 后端需要 API Key（config.json 的 tts.siliconflow.apiKey 或环境变量）')
     if (!s.voice) throw new Error('SiliconFlow 后端需要填 voice（预置音色如 model:alex，或克隆后的 uri）')
 
-    const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), s.timeoutMs)
     let res
     try {
-      res = await fetch(`${s.baseUrl.replace(/\/+$/, '')}/audio/speech`, {
+      res = await fetchBuffered(`${s.baseUrl.replace(/\/+$/, '')}/audio/speech`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: s.model, input: text, voice: s.voice, response_format: 'wav' }),
-        signal: ac.signal,
+        signal: requests.getStore()?.signal,
+        timeoutMs: s.timeoutMs,
+        ...(fetchImpl ? { fetchImpl } : {}),
       })
     } catch (e) {
-      clearTimeout(timer)
       throw new Error(`SiliconFlow 连不上：${e.name === 'AbortError' ? '超时' : e.message}`)
     }
-    clearTimeout(timer)
 
     if (!res.ok) {
       const t = await res.text().catch(() => '')
@@ -873,11 +861,9 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
     const emo = m.emotionMap?.[category] || m.emotion
     if (emo) voice.emotion = emo
 
-    const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), m.timeoutMs)
     let res
     try {
-      res = await fetch(`${m.baseUrl.replace(/\/+$/, '')}/t2a_v2`, {
+      res = await fetchBuffered(`${m.baseUrl.replace(/\/+$/, '')}/t2a_v2`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({
@@ -892,13 +878,13 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
             channel: 1,
           },
         }),
-        signal: ac.signal,
+        signal: requests.getStore()?.signal,
+        timeoutMs: m.timeoutMs,
+        ...(fetchImpl ? { fetchImpl } : {}),
       })
     } catch (e) {
-      clearTimeout(timer)
       throw new Error(`MiniMax 连不上：${e.name === 'AbortError' ? '超时' : e.message}`)
     }
-    clearTimeout(timer)
 
     if (!res.ok) {
       const t = await res.text().catch(() => '')
@@ -937,20 +923,20 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
    * **支持行内音频标签**（`[叹气]` `[轻笑]` 这类）和自然语言风格指令 ——
    * 这是 MiniMax 给不了的，正好对着我们的情绪系统。
    */
-  let mimoSampleCache = null
   function mimoSample() {
-    if (mimoSampleCache !== null) return mimoSampleCache
+    const request = requests.getStore()
+    if (request && request.sample !== undefined) return request.sample
     const f = cfg.mimo.voiceSample
-    if (!f) return (mimoSampleCache = '')
-    const abs = path.isAbsolute(f) ? f : path.join(root, f)
-    try {
-      const buf = fs.readFileSync(abs)
-      const ext = /\.mp3$/i.test(abs) ? 'mpeg' : 'wav'
-      mimoSampleCache = `data:audio/${ext};base64,${buf.toString('base64')}`
-    } catch {
-      mimoSampleCache = ''
+    let sample = ''
+    if (f) {
+      try {
+        const abs = path.isAbsolute(f) ? f : path.join(root, f)
+        const type = /\.mp3$/i.test(abs) ? 'mpeg' : 'wav'
+        sample = `data:audio/${type};base64,${fs.readFileSync(abs).toString('base64')}`
+      } catch { /* Missing sample is reported by the caller. */ }
     }
-    return mimoSampleCache
+    if (request) request.sample = sample
+    return sample
   }
 
   async function mimo(text, category) {
@@ -975,21 +961,19 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
     // voicedesign 不支持 voice 字段（它的音色由 user message 的描述决定）
     if (!isDesign) body.audio.voice = sample || m.presetVoice || 'mimo_default'
 
-    const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), m.timeoutMs)
     let res
     try {
-      res = await fetch(`${m.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      res = await fetchBuffered(`${m.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify(body),
-        signal: ac.signal,
+        signal: requests.getStore()?.signal,
+        timeoutMs: m.timeoutMs,
+        ...(fetchImpl ? { fetchImpl } : {}),
       })
     } catch (e) {
-      clearTimeout(timer)
       throw new Error(`MiMo 连不上：${e.name === 'AbortError' ? '超时' : e.message}`)
     }
-    clearTimeout(timer)
 
     const raw = await res.text().catch(() => '')
     if (!res.ok) throw new Error(`MiMo HTTP ${res.status}：${raw.slice(0, 300)}`)
@@ -1020,7 +1004,7 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
       return cfg.backend
     },
     get config() {
-      return cfg
+      return currentConfig
     },
     get libraryError() {
       return libraryError
@@ -1131,7 +1115,11 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
      * 合成一句话。
      * @returns {{ok:boolean, file?:string, url?:string, ms:number, cached:boolean, ref?:object, error?:string}}
      */
-    async speak({ text, category = '平静', refId = null, noCache = false, seed } = {}) {
+    speak(args = {}) {
+      return requests.run({ config: deepMerge(DEFAULTS, currentConfig), signal: args.signal }, () => api.synthesize(args))
+    },
+
+    async synthesize({ text, category = '平静', refId = null, noCache = false, seed } = {}) {
       const started = Date.now()
       const cleanText = String(text || '').trim()
       if (!cleanText) return { ok: false, ms: 0, cached: false, error: '空文本' }
@@ -1176,7 +1164,7 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
         ? await calibratedSpeed(clip, seed)
         : null
 
-      const key = cacheKey(cleanText, clip.id, seed, speed)
+      const key = cacheKey(cleanText, clip.id, seed, speed, category)
       const file = path.join(cacheDir, `${key}.wav`)
       const ref = {
         id: clip.id,
@@ -1247,6 +1235,7 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
           return null
         }
         const synthOnce = async (s) => {
+          requests.getStore()?.signal?.throwIfAborted()
           let b
           if (cfg.backend === 'minimax') b = await minimax(cleanText, category)
           else if (cfg.backend === 'mimo') b = await mimo(cleanText, category)
@@ -1287,6 +1276,7 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
           log(`重试 2 次后仍是废片（${stillBad}），这一句只能这么发了`)
         }
 
+        requests.getStore()?.signal?.throwIfAborted()
         // 先写临时文件再改名 —— 播放中被打断不会留下半个 wav
         const tmp = `${file}.${process.pid}.part`
         fs.writeFileSync(tmp, buf)
@@ -1309,10 +1299,9 @@ function createTts({ config, root, cacheDir, log = () => {}, resolveKey = () => 
     /** 换配置后热更新（改后端、改语速不用重启） */
     reload(nextConfig) {
       const merged = deepMerge(DEFAULTS, nextConfig || {})
-      for (const k of Object.keys(cfg)) delete cfg[k]
-      Object.assign(cfg, merged)
+      currentConfig = merged
       recentIds = []
-      return cfg
+      return currentConfig
     },
 
     clearCache() {

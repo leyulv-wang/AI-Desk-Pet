@@ -20,6 +20,9 @@ const { composeCardPrompt } = require('./character-card-prompt')
 const emotion = require('./emotion')
 const { createSplitter, pauseAfter } = require('./sentence')
 
+const { resolvePetFile } = require('./app-protocol')
+const { fetchBuffered } = require('./api-request')
+
 const ROOT = path.join(__dirname, '..')
 const CONFIG_PATH = path.join(ROOT, 'config.json')
 
@@ -40,7 +43,7 @@ const USER_DATA_DIR = process.env.PET_USER_DATA
   || (IS_DEV_RUN ? path.join(ROOT, '.userdata-dev') : path.join(ROOT, '.userdata'))
 app.setPath('userData', USER_DATA_DIR)
 
-/** TTS 合成出来的 wav 落在这儿。渲染层通过 pet://app/.userdata/tts-cache/<file> 取 */
+/** TTS 合成出来的 wav 落在这儿。渲染层通过 pet://app/audio/tts/<file> 取 */
 const TTS_CACHE_DIR = path.join(app.getPath('userData'), 'tts-cache')
 /** 唱歌的产物（成品 + 人声轨 + meta.json）落在这儿，同样通过 pet://app/ 取 */
 const SINGING_OUT_DIR = path.join(app.getPath('userData'), 'singing')
@@ -60,68 +63,12 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 function registerAppProtocol() {
-  const MIME = {
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'text/javascript; charset=utf-8',
-    '.mjs': 'text/javascript; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp',
-    // 静态立绘的占位素材是 SVG（见 scripts/make-static-pet.mjs）。
-    // ⚠️ 少了这一行的话它会被当 application/octet-stream 返回，
-    //    <img> 拒绝解码（naturalWidth=0）、onload 永不触发 —— 表现是**立绘完全不显示**
-    //    但也不报任何错。踩过一次。
-    '.svg': 'image/svg+xml',
-    '.wav': 'audio/wav',
-    '.mp3': 'audio/mpeg',
-    '.ogg': 'audio/ogg',
-    '.moc3': 'application/octet-stream',
-  }
-
-  // TTS 吐出来的 wav 放在 userData 下，必须能从渲染层 fetch 到。
-  // 但整个 .userdata 里有 facts.json / history.json / embeddings.json，
-  // 不能一起敞开 —— 只放行这几个子目录。
-  //
-  // 唱歌的产物（.userdata/singing/）是同一类东西：渲染层要 fetch 成品和人声轨。
-  // 加进来的时候顺手改成「白名单数组」—— 之前是一个字符串，再加第二个地方
-  // 就得写第二遍 if，迟早漏掉一个。
-  const SERVED_SUBDIRS = [
-    path.relative(ROOT, TTS_CACHE_DIR).split(path.sep).join('/'),
-    path.relative(ROOT, SINGING_OUT_DIR).split(path.sep).join('/'),
-  ]
-
-  protocol.handle('pet', async (request) => {
-    const url = new URL(request.url)
-    if (url.host !== 'app') return new Response('not found', { status: 404 })
-
-    const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '')
-    const target = path.resolve(ROOT, rel)
-
-    // 防目录穿越：解析后必须还在 ROOT 里
-    if (target !== ROOT && !target.startsWith(ROOT + path.sep)) {
-      return new Response('forbidden', { status: 403 })
-    }
-
-    // .userdata 里只放行白名单子目录，别的一律 403（内存/历史/向量都在那儿）
-    const relNorm = path.relative(ROOT, target).split(path.sep).join('/')
-    if (relNorm === '.userdata' || relNorm.startsWith('.userdata/')) {
-      if (!SERVED_SUBDIRS.some((d) => relNorm.startsWith(d + '/'))) {
-        return new Response('forbidden', { status: 403 })
-      }
-    }
-
-    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
-      return new Response('not found', { status: 404 })
-    }
-
-    const res = await net.fetch(pathToFileURL(target).toString())
-    // 显式给出 Content-Type —— file:// 的推断不一定靠谱
-    const type = MIME[path.extname(target).toLowerCase()] || 'application/octet-stream'
+  protocol.handle('pet', async request => {
+    const resolved = resolvePetFile(request.url, { root: ROOT, ttsDir: TTS_CACHE_DIR, singingDir: SINGING_OUT_DIR })
+    if (resolved.status !== 200) return new Response('', { status: resolved.status })
+    const res = await net.fetch(pathToFileURL(resolved.file).toString())
     const headers = new Headers(res.headers)
-    headers.set('Content-Type', type)
+    headers.set('Content-Type', resolved.type)
     return new Response(res.body, { status: res.status, headers })
   })
 }
@@ -233,7 +180,7 @@ function loadConfig() {
       for (const [k, v] of Object.entries(raw.tts || {})) {
         cfg.tts[k] = v && typeof v === 'object' && !Array.isArray(v) ? { ...(TTS_DEFAULTS[k] || {}), ...v } : v
       }
-      // singing 同理（separate / ddsp / mix 都是嵌套对象）
+      // singing 合并云端配置，旧管线字段不参与执行。
       // 注意：老配置里可能还留着已废弃的 rvc / zeroshot 段 —— 合并进来无害
       // （没有代码读它们了），但别再往模板里写。
       cfg.singing = { ...SINGING_DEFAULTS }
@@ -917,7 +864,8 @@ const { History } = require('./history')
  */
 async function callOnce(messages, { model, temperature = 0.2, maxTokens = 2600 } = {}) {
   const base = config.baseUrl.replace(/\/+$/, '')
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await fetchBuffered(`${base}/chat/completions`, {
+    timeoutMs: 120000,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1018,17 +966,19 @@ const voiceServer = createVoiceServer({
 })
 
 /**
- * 唱歌 —— 离线翻唱管线。
+ * 唱歌 —— 云端翻唱 API。
  *
- * 和 tts 是**两条独立链路**，只是共用「角色的一张嗓子」：
+ * 和 tts 是**两条独立链路**，输出音色由各自 API 决定：
  *   tts     一句话 → 几百毫秒 → 边说边播
  *   singing 一首歌 → 几分钟  → 整首播
- * 所以它挂了、没配好、没建 venv，都只影响唱歌，聊天和说话一概不受影响。
+ * 所以它不可用、没配好或无音乐接口权限，都只影响唱歌，聊天和说话一概不受影响。
  */
 const singing = createSinging({
   root: ROOT,
   userDataDir: app.getPath('userData'),
   config: config.singing,
+  getProvider: () => config.tts?.minimax || {},
+  resolveKey,
   log: (m) => console.log(m),
 })
 
@@ -1137,7 +1087,8 @@ async function callEmbed(texts) {
   if (!key) throw new Error('没有可用的向量化 API Key')
 
   const base = String(e.baseUrl).replace(/\/+$/, '')
-  const res = await fetch(`${base}/embeddings`, {
+  const res = await fetchBuffered(`${base}/embeddings`, {
+    timeoutMs: config.embedding?.timeoutMs || 30000,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model: e.model, input: texts, encoding_format: 'float' }),
@@ -1296,7 +1247,10 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
     seed: null,
   }
   const splitter = createSplitter(config.tts?.split || {})
+  const speechController = new AbortController()
+  controller.signal.addEventListener('abort', () => speechController.abort(), { once: true })
   controller.stopSpeech = () => {
+    speechController.abort()
     speech.dropped = true
     speech.enabled = false
     speech.queue.length = 0
@@ -1345,6 +1299,7 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
         }
 
         const r = await tts.speak({
+          signal: speechController.signal,
           text: job.text,
           category: speech.category,
           refId: speech.refId,
@@ -1465,6 +1420,10 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
   function onDeltaText(d) {
     assistantText += d
     send('chat:delta', { id, delta: d })
+    if (!speech.emotionDone) {
+      const tagged = emotion.extractTag(assistantText)
+      if (tagged.category) setEmotion(tagged.category, 'tag')
+    }
     if (!speech.enabled) return
 
     // 只喂原始文本。偏移相对 assistantText，只增不减，不会错位。
@@ -1508,6 +1467,10 @@ ipcMain.handle('chat:start', (event, { id, text }) => {
         }
       }
 
+      if (!speech.emotionDone) {
+        const resolved = emotion.resolveEmotion(assistantText)
+        setEmotion(resolved.category, resolved.source || 'rule')
+      }
       send('chat:done', { id })
     } catch (err) {
       speech.dropped = true

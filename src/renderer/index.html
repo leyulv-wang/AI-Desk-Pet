@@ -85,12 +85,6 @@
     <pre>npm run setup</pre>
   </div>
 
-  <script src="../../vendor/pixi.min.js"></script>
-  <!-- 必须紧跟在 pixi.js 之后：它把 Pixi 里用 new Function() 编译着色器的那段
-       换成查表实现，这样严格 CSP（禁止 unsafe-eval）下也能跑 -->
-  <script src="../../vendor/unsafe-eval.min.js"></script>
-  <script src="../../vendor/live2dcubismcore.min.js"></script>
-  <script src="../../vendor/cubism4.min.js"></script>
   <script src="face.js"></script>
   <script src="voice.js"></script>
   <!-- 静态立绘渲染器：只定义 window.petStatic 工厂，**不自动跑**。

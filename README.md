@@ -1,113 +1,48 @@
-# 桌宠 · L2：形象 + 文字对话 + 语音
+# AI 桌宠 · 个人 Windows 陪伴软件
 
-角色是**芙宁娜**（原神）。四层递进里现在走到第二层：
+以芙宁娜为角色，日常显示角色、短字幕与输入条，按需展开聊天／记忆／唱歌统一面板。当前优先自己每天使用，逐步打磨。
 
-```
-L1  ✅  Live2D 形象 + 文字对话（流式）+ 透明置顶穿透窗口
-L2  ✅  出声说话（本地 GPT-SoVITS 克隆音色 + 情绪选参考 + 真实音量驱动口型）
-L3     唱歌（离线翻唱管线）
-L4  ✅  换成真正的芙宁娜 Live2D 模型（VTS 免费配布版，见「模型」一节）
-```
-
----
+- 对话：兼容 chat/completions 的流式 API。
+- 语音：默认 MiniMax API，可选择其他已支持的后端。
+- 唱歌：参考音频发送给 MiniMax music-cover 云端翻唱，旧 DDSP / RVC 管线已移除。
+- 显示：静态表情图片或 Live2D；静态模式独立运行，无需 Live2D 库。
+- 记忆：本地历史和事实记忆，整理与向量化按配置调用 API。
 
 ## 跑起来
 
-### 最省事：双击两个文件
-
-项目根目录有两个 `.cmd`，双击就行，不用开终端：
-
-| 文件 | 作用 |
-| --- | --- |
-| **`启动桌宠.cmd`** | 启动。已经在跑的话不会开第二只，而是把已有窗口唤到前面 |
-| **`关闭桌宠.cmd`** | 关闭。**连她拉起来的语音服务一起收掉** |
-
-关闭脚本为什么要管语音服务：那玩意儿占着约 2.9G 显存。
-如果桌宠是被强杀的（任务管理器 / `Stop-Process`），它来不及收，
-语音服务就变成孤儿进程一直占着显存 —— 用户只会觉得「关了怎么显存没降」。
-所以关闭脚本走的是 `taskkill` **不带 `/F`**（发 WM_CLOSE，让它正常退出），
-等 10 秒还不退才强杀，并且强杀之后自己补刀收拾语音服务。
-
-查看状态（也可以直接跑，不带参数就是 status）：
-
-```bash
-pwsh -File scripts/pet-ctl.ps1 status
-# 桌宠：在跑（pid 24724）
-# 语音服务：在跑（pid 5060）
-```
-
-`scripts/pet-ctl.ps1` 支持的参数：
-
-```bash
-pwsh -File scripts/pet-ctl.ps1 start              # 启动
-pwsh -File scripts/pet-ctl.ps1 start -Foreground  # 前台启动，日志打在终端（排错用）
-pwsh -File scripts/pet-ctl.ps1 stop               # 关闭
-pwsh -File scripts/pet-ctl.ps1 stop -KeepVoice    # 关闭但留着语音服务（你自己起着调试时用）
-pwsh -File scripts/pet-ctl.ps1 status             # 看状态
-```
-
-> 桌宠会在 `.userdata/pet.pid` 里写下自己的进程号，关闭脚本靠它认人。
-> 这比「按命令行捞 electron 进程」可靠 —— Electron 有好几个子进程，
-> 而且换个启动方式（`npm start` / 直接跑 `electron.exe`）命令行就不一样了。
-
-### 三种关闭方式，随便哪种
-
-1. **`关闭桌宠.cmd`**（或者 `scripts/pet-ctl.ps1 stop`）
-2. **全局快捷键 `Ctrl+Shift+Q`** —— 不用去找那个小小的关闭按钮
-3. **点窗口的关闭按钮** —— 关窗即退出
-
-三种都会走同一套退出流程：关掉自己拉起来的语音服务 + 落盘还没整理完的对话记忆。
-`Ctrl+Shift+P` 是显示/隐藏切换（不是退出）。
-
-### 命令行启动
-
-```bash
+```powershell
 cd desktop-pet
-npm install          # 装 Electron
-npm run setup        # 下载前端库 + Live2D 模型到本地（之后可离线运行）
-npm run check        # 可选：验证 API Key 与对话链路是否通
-npm start            # 启动（语音服务会被自动拉起来，不用另开终端）
+npm install
+npm start
 ```
 
-> 第一次跑 `npm install` 之后如果 `node_modules/electron/dist/electron.exe` 不存在，
-> 说明 Electron 的二进制没下下来，单独补一句：
-> ```bash
-> node node_modules/electron/install.js
-> ```
-> 国内网络建议先设 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`。
+首次将 config.example.json 复制为 config.json 并填写 API；已有配置时保留原文件。可双击项目根目录的 `启动桌宠.cmd`／`关闭桌宠.cmd`。`Ctrl+Shift+P` 显示或隐藏，`Ctrl+Shift+Q` 退出。默认窗口位于屏幕右下角。
 
-**语音服务是桌宠自己拉的。** 开了 `tts.enabled` 且 `tts.gptsovits.autoStart=true`（默认），
-桌宠启动时会在后台把 GPT-SoVITS 拉起来（模型要读 4.5G 进显存，约 10 秒），
-聊天记录里会打印进度。它先立起来、嗓子随后到，不挡窗口显示。
+首次准备角色资源：Live2D 用 `npm run setup`；芙宁娜图片模式按本文末尾「芙宁娜图片桌宠」执行安装脚本。图片不随源码分发，运行前需要下载。语音设 `tts.enabled=true`、`tts.backend=minimax` 并填 `tts.minimax.apiKey`、`voiceId`；无需启动 Python 服务。
 
-**不开语音也能用。** `tts.enabled=false`、`autoStart=false`、或找不到整合包，
-都只是不出声 —— 打字聊天、记忆、历史一概不受影响。
+## 云端翻唱
 
-想单独把服务起好再开桌宠，或者自动启动失败想看它到底报什么错：
+展开唱歌面板 → ＋选歌 → 唱 → 生成后自动播放。生成中可停止等待，播放中可停止播放。API 返回的是完整混音，当前口型按混音音量驱动。
 
-```bash
-npm run voice        # 独立启动，日志直接打在终端
+参考音频 6 秒至 6 分钟，最大 50MB。`singing.baseUrl`／`apiKey` 留空则沿用 `tts.minimax`，也支持环境变量 `MINIMAX_API_KEY`。`singing.prompt` 设置目标风格；翻唱没有说话的 voiceId 参数，不保证二者音色一致。音频会发送到服务商，生成可能收费；停止等待无法保证服务商停止计算或计费。
+
+[MiniMax 音乐 API 文档](https://platform.minimax.cn/docs/api-reference/music-generation)说明音乐接口对新账号有限制，历史开通用户可继续使用。界面配置就绪只代表参数齐全，实际权限、余额和生成质量需要账号验证。
+
+```powershell
+npm run sing -- songs/歌曲.mp3 # 显式云端调用，可能收费
+npm run test:singing          # 离线测试，不提交音频
+npm test                     # 全部离线回归及 Electron 交互测试
 ```
 
-**窗口在哪**：屏幕**右下角**（16px 边距）。找不到就再启动一次 ——
-第二次启动不会开新窗口，而是把已有的那个 `show() + focus()`。
-快捷键 `Ctrl+Shift+P` 是显示/隐藏切换，可能被误按过。
-缩放倍率会自动记住（右下角为锚点），太小就滚轮放大。
+配置与歌曲内容变化会生成新的缓存身份；点击重唱会重新提交。歌曲保存在 `songs/`，结果保存在用户数据目录的 `singing/`。`PET_USER_DATA` 可指定外部数据目录，播放仍使用同源音频协议。个人配置、历史、歌曲、模型与音频不上传 Git。
 
-`npm run setup` 会拉：
+[本次审查及修复记录](docs/reviews/2026-10-11-api-fixes.md)。目前尚无 Windows 安装包，图形化设置与打包是后续迭代内容。
 
-| 位置 | 内容 |
-| --- | --- |
-| `vendor/` | PixiJS 6、Live2D Cubism Core、pixi-live2d-display（Cubism 4 版） |
-| `assets/models/Furina/` | 芙宁娜 Live2D 模型（VTS 免费配布版，自带 4 表情 + 1 动作） |
-| `assets/models/Hiyori/` | Live2D 官方示例模型 Hiyori（备份，可用 `--model` 切回去） |
-| `assets/models/index.json` | 清单，告诉渲染层当前装的是哪个模型 |
+## 语音与角色开发记录
 
-两个目录都在 `.gitignore` 里 —— **不要提交**（见下方「授权」）。
+以下保留历史调试和设计记录，包含曾经尝试的本地 GPT-SoVITS 后端；日常使用以 API 配置为准。
 
----
 
-## 语音（L2）
 
 > **当前用的是云端 MiniMax 声音克隆**，不是本地推理。下面「怎么接上的」那几节讲的是本地
 > GPT-SoVITS 的方案，代码还在、随时能切回去（`tts.backend` 改一个词），
@@ -1694,7 +1629,7 @@ facts.json + embeddings.json
 ### 已知限制
 
 - 没有语音**输入**（打字为主，这是刻意的）
-- 不能唱歌 —— L3
+- 云端翻唱需要账号音乐接口权限；未保证说话与唱歌音色一致
 - 模型是同人免费配布的 Live2D（狐宮静商店），不是米哈游官方素材；只有 4 个原生表情，其余情绪靠标准参数推
 - 语音服务要常驻一个 Python 进程，占约 4.5 GB 显存
 - 合成一句约 1.6~2 秒；流水线能让她早点开口，但第一句仍要等
@@ -1735,7 +1670,7 @@ facts.json + embeddings.json
 | --- | --- | --- |
 | L1 | 形象 + 文字对话 | ✅ 完成 |
 | L2 | 语音（克隆音色 + 情绪选参考 + 真实音量口型） | ✅ 完成 |
-| L3 | 唱歌（离线翻唱管线） | 待做 |
+| L3 | 云端翻唱 API | 已接入，需账号权限 |
 | L4 | 换成真正的芙宁娜 Live2D 模型 | ✅ 完成 |
 | — | 友好度 / Eros | **刻意不做** —— 先把功能跑通再说 |
 
@@ -1754,7 +1689,7 @@ npm run test:ui
 
 `npm test` 运行 10 个离线测试套件，包含真实 Electron 渲染器中的交互检查。测试使用独立临时数据目录和模拟聊天/语音响应，不调用收费 API，也不启动 GPU 翻唱链路。真实 Live2D 检查可运行 `node scripts/test-ui.mjs --live2d`。
 
-界面参考：[N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) 的紧凑陪伴方式、[Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) 的可打断交互；本项目保留现有角色与本地语音、唱歌能力。
+界面参考：[N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) 的紧凑陪伴方式、[Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) 的可打断交互；本项目保留现有角色，日常语音与翻唱使用 API。
 
 ## 芙宁娜图片桌宠
 
